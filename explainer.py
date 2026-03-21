@@ -57,9 +57,19 @@ def plot_feature_importance(
         method = "Built‑in"
     else:
         print("[Explainer] Using permutation importance (may take a moment)…")
+        # Subsample for speed and memory safety when dense conversion is required
+        n_samples = min(10000, X_transformed.shape[0])
+        idx = np.random.RandomState(42).choice(X_transformed.shape[0], n_samples, replace=False)
+        X_sample = X_transformed[idx]
+        y_sample = y_test.iloc[idx] if hasattr(y_test, "iloc") else y_test.values[idx]
+        
+        import scipy.sparse
+        if scipy.sparse.issparse(X_sample):
+            X_sample = X_sample.toarray()
+            
         result = permutation_importance(
-            model, X_transformed, y_test,
-            n_repeats=10, random_state=42, n_jobs=-1,
+            model, X_sample, y_sample,
+            n_repeats=5, random_state=42, n_jobs=-1,
         )
         importances = result.importances_mean
         method = "Permutation"
