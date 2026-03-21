@@ -1,6 +1,6 @@
 # MLBuilder — Automated Machine Learning Pipeline
 
-A modular, efficient AutoML pipeline for tabular datasets built with Scikit-learn. Supports both **classification** and **regression** problems with automatic detection, data cleaning, feature engineering, efficient model training, hyperparameter tuning, explainability (SHAP), and HTML report generation.
+A modular, efficient AutoML pipeline for tabular datasets built with Scikit-learn. Supports both **classification** and **regression** problems with automatic detection, data cleaning, scalable feature engineering, resource-aware adaptive training, hyperparameter tuning, explainability (SHAP), and HTML report generation.
 
 ---
 
@@ -10,7 +10,9 @@ A modular, efficient AutoML pipeline for tabular datasets built with Scikit-lear
 |-------|-----------|
 | **Data Loading** | CSV and Excel input, auto problem-type detection, stratified train/test split |
 | **Data Cleaning** | Duplicate removal, median imputation (numeric), mode imputation (categorical), ID and leakage column auto-detection |
-| **Feature Processing** | Auto column-type detection, `StandardScaler` + `OneHotEncoder`, optional mutual-information feature selection |
+| **Resource-Aware Engine** | Dynamically adapts pipeline to dataset size to prevent OOM errors. Restricts models on large datasets, prevents feature explosions by capping one-hot encoding limits, and falls back to frequency encoding. |
+| **Smart Feature Engineering**| Automatic skewness handling (log transforms), outlier capping, cardinality-based encoding (one-hot/frequency/target), and top-k numeric interactions. |
+| **Feature Processing** | Auto column-type detection, `StandardScaler` + encoders, optional mutual-information feature selection |
 | **Model Training** | Baseline screening on subsample with early-stopping, full training on promising models, parallel execution (`n_jobs=-1`), wall-clock time budget |
 | **Model Selection** | Evaluation on held-out test set, best model selection (F1 for classification, RMSE for regression), optional hyperparameter tuning (top-2 models) |
 | **EDA** | Dataset summary, target/feature distribution plots, correlation heatmap |
@@ -26,6 +28,8 @@ MLBuilder/
 ├── main.py                  # CLI entry point — orchestrates the full pipeline
 ├── data_loader.py           # Load CSV/Excel, detect problem type, split data
 ├── data_cleaner.py          # Remove duplicates, impute missing values
+├── resource_manager.py      # Adaptive engine for data constraints & OOM prevention
+├── feature_engineering.py   # Smart outlier handling, transforms, and interactions
 ├── feature_processing.py    # ColumnTransformer + optional feature selection
 ├── model_trainer.py         # Model catalogue, baseline screening, full training
 ├── model_selector.py        # Evaluate, select best, tune, persist
@@ -68,10 +72,10 @@ pip install -r requirements.txt
 python main.py --dataset data.csv --target label
 ```
 
-### With Report Generation
+### With Resource-Aware Feature Engineering & Report Generation
 
 ```bash
-python main.py --dataset data.csv --target label --report
+python main.py --dataset data.csv --target label --enable_fe --report
 ```
 
 ### Skip SHAP for Faster Reports
@@ -98,6 +102,9 @@ python main.py \
   --max_time 10m \
   --tune \
   --tune_method randomized \
+  --enable_fe \
+  --outlier_strategy cap \
+  --interaction_features 5 \
   --report
 ```
 
@@ -105,11 +112,13 @@ python main.py \
 
 ## CLI Reference
 
+### Core Pipeline Options
+
 | Argument | Type | Default | Description |
 |----------|------|---------|-------------|
 | `--dataset` | str | *required* | Path to CSV or Excel file |
 | `--target` | str | *required* | Name of the target column |
-| `--models` | str | `all` | Comma-separated model keys (see below) |
+| `--models` | str | `all` | Comma-separated model keys (e.g., logistic,rf,gb) |
 | `--sample` | float | `0.3` | Subsample fraction for baseline screening |
 | `--cv` | int | `5` | Cross-validation folds |
 | `--max_time` | str | None | Training time budget (e.g. `10m`, `30s`, `1h`) |
@@ -120,6 +129,22 @@ python main.py \
 | `--test_size` | float | `0.2` | Test split fraction |
 | `--output_dir` | str | `models` | Directory for saved model and metrics |
 | `--config` | str | `config.json` | Path to config JSON file |
+
+### Feature Engineering & Resource Management Options
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
+| `--enable_fe` | flag | off | Enable smart feature engineering |
+| `--cardinality_threshold` | float | `0.05` | Unique-ratio threshold for high-carinality encoding |
+| `--skew_threshold` | float | `1.0` | Skewness threshold for log transform |
+| `--interaction_features`| int | `0` | Top-k numeric features for pairwise interactions |
+| `--outlier_strategy` | str | `cap` | Outlier handling: `cap` or `none` |
+| `--encoding_strategy`| str | `frequency` | High-cardinality encoding (`target` or `frequency`) |
+
+### Reporting Options
+
+| Argument | Type | Default | Description |
+|----------|------|---------|-------------|
 | `--report` | flag | off | Generate EDA + explainability HTML report |
 | `--no-shap` | flag | off | Skip SHAP plots (faster) |
 
@@ -130,9 +155,13 @@ python main.py \
 | Classification | `logistic` | Logistic Regression |
 | Classification | `rf` | Random Forest Classifier |
 | Classification | `gb` | Gradient Boosting Classifier |
+| Classification | `lightgbm` | LightGBM Classifier |
+| Classification | `xgboost` | XGBoost Classifier |
 | Regression | `linear` | Linear Regression |
 | Regression | `rf` | Random Forest Regressor |
 | Regression | `gb` | Gradient Boosting Regressor |
+| Regression | `lightgbm` | LightGBM Regressor |
+| Regression | `xgboost` | XGBoost Regressor |
 
 ---
 
@@ -154,6 +183,10 @@ All CLI arguments can also be set in `config.json`. CLI arguments take precedenc
     "tune": false,
     "tune_method": "randomized",
     "tune_iter": 20,
+    "enable_fe": false,
+    "outlier_strategy": "cap",
+    "encoding_strategy": "frequency",
+    "interaction_features": 0,
     "save_metrics_csv": true,
     "output_dir": "models",
     "random_state": 42
@@ -169,12 +202,14 @@ The pipeline executes these steps in order:
 ```
 STEP 1  Load dataset         → CSV/Excel, auto-detect problem type, split 80/20
 STEP 2  Clean data            → Remove duplicates, impute missing values
-STEP 3  Feature processing    → StandardScaler (numeric) + OneHotEncoder (categorical)
-STEP 4  Baseline screening    → Train all models on subsample, drop underperformers
-STEP 5  Full training         → Train promising models on full training set
-STEP 6  Evaluation            → Test-set metrics, select best model, save outputs
-STEP 7  EDA (--report)        → Summary stats, distribution plots, correlation heatmap
-STEP 8  Explainability        → Feature importance + SHAP plots, generate HTML report
+[Engine]Resource Analysis     → Analyze dataset size/constraints, cap OH encoding, select model tier
+STEP 3  Smart Feature Eng.    → (Optional) Outliers, log transforms, interactions, encoding maps
+STEP 4  Feature processing    → StandardScaler (numeric) + Target/Freq/OneHot Encoders
+STEP 5  Baseline screening    → Train selected models on subsample, drop underperformers
+STEP 6  Full training         → Train promising models on full training set
+STEP 7  Evaluation            → Test-set metrics, select best model, save outputs
+STEP 8  EDA (--report)        → Summary stats, distribution plots, correlation heatmap
+STEP 9  Explainability        → Feature importance + SHAP plots, generate HTML report
         (--report)
 ```
 
@@ -236,6 +271,8 @@ Each module is importable and reusable independently:
 ```python
 from data_loader import load_dataset, DataBundle
 from data_cleaner import clean
+from resource_manager import ResourceManager
+from feature_engineering import FeatureEngineer
 from feature_processing import build_preprocessor, select_features
 from model_trainer import get_models, baseline_screen, full_train
 from model_selector import evaluate_models, select_best, tune_top_models, save_model
@@ -248,6 +285,7 @@ from report_generator import generate_report
 
 ## Built-in Safeguards
 
+- **Resource-Aware Dynamic Tiering** — Automatically switches to scalable tree engines (LightGBM/XGBoost) and disables highly complex feature engineering routines for large datasets to prevent OOM errors.
 - **Leakage Detection** — Automatically drops numeric features with |correlation| > 0.95 to target, and any feature that alone achieves ROC-AUC > 0.98 via a single-feature decision tree test.
 - **ID Column Removal** — Drops columns named `id` or ending with `_id` that have high cardinality.
 - **Early Stopping** — Models scoring in the bottom 30% of baseline range are dropped before full training.
@@ -266,6 +304,8 @@ from report_generator import generate_report
 - matplotlib ≥ 3.6.0
 - seaborn ≥ 0.12.0
 - shap ≥ 0.42.0
+
+*Note: The Resource-Aware engine may attempt to use `xgboost` and `lightgbm` via the model catalogue if they are installed, otherwise it falls back to scikit-learn implementations.*
 
 ---
 
