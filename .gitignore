@@ -1,0 +1,16 @@
+online_casino.csv
+*.csv
+*.xlsx
+__pycache__/
+models/
+reports/
+venv/
+spotify.csv
+Student_Performance.csv.xlsx
+property_data.csv
+online_casino.csv
+*.csv
+*.pkl
+*.xlsx
+*.html
+*.png
