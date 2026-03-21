@@ -211,7 +211,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         high_cardinality_threshold=cfg.get("high_cardinality_threshold", 0.1),
         high_cardinality_strategy=cfg.get("high_cardinality_strategy", "target"),
     )
-    resource_config = rm.analyze(X_train_clean)
+    resource_config = rm.analyze(X_train_clean, problem_type=bundle.problem_type)
 
     # Override pipeline settings based on resource constraints
     do_fe = do_fe and resource_config["enable_fe"]
