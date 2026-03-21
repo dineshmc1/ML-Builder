@@ -159,7 +159,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     output_dir = args.output_dir or cfg.get("output_dir", "models")
     random_state = cfg.get("random_state", 42)
     save_csv = cfg.get("save_metrics_csv", True)
-    do_report = getattr(args, "report", False) or cfg.get("report", False)
+    do_report = True
     skip_shap = getattr(args, "no_shap", False) or cfg.get("no_shap", False)
     reports_dir = cfg.get("reports_dir", "reports")
     do_fe = getattr(args, "enable_fe", False) or cfg.get("enable_fe", False)

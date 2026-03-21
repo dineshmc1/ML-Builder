@@ -30,7 +30,7 @@ class ResourceManager:
         self.small_size_threshold = small_size_threshold
         self.medium_size_threshold = medium_size_threshold
 
-    def analyze(self, X: pd.DataFrame) -> Dict[str, Any]:
+    def analyze(self, X: pd.DataFrame, problem_type: str) -> Dict[str, Any]:
         """Analyze dataset and return a resource decision configuration."""
         n_rows, _ = X.shape
 
@@ -41,18 +41,18 @@ class ResourceManager:
         # 1. Dataset size classification and basic rules
         if n_rows < self.small_size_threshold:
             size_category = "small"
-            models_to_run = ["logistic", "rf", "gb"]
+            models_to_run = ["logistic", "rf", "gb", "lightgbm", "xgboost"] if problem_type == "classification" else ["linear", "rf", "gb", "lightgbm", "xgboost"]
             enable_fe = True
             interaction_k = 5
         elif n_rows <= self.medium_size_threshold:
             size_category = "medium"
-            models_to_run = ["logistic", "rf"]
+            models_to_run = ["logistic", "rf", "lightgbm", "xgboost"] if problem_type == "classification" else ["linear", "rf", "lightgbm", "xgboost"]
             enable_fe = True
             interaction_k = 2
         else:
             size_category = "large"
             # For large datasets, restrict to scalable models.
-            models_to_run = ["logistic", "linear", "lightgbm", "xgboost"]
+            models_to_run = ["logistic", "lightgbm", "xgboost"] if problem_type == "classification" else ["linear", "lightgbm", "xgboost"]
             enable_fe = False  # Avoid heavy operations safely
             interaction_k = 0
             
