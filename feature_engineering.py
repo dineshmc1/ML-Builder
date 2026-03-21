@@ -30,24 +30,33 @@ class FeatureEngineer:
     def __init__(
         self,
         *,
+        fe_level: str = "full",
         cardinality_threshold: float = 0.05,
         skew_threshold: float = 1.0,
         outlier_strategy: str = "cap",        
         encoding_strategy: str = "frequency", 
-        interaction_features: int = 0,        
+        interaction_features: int = 5,        
+        enable_ratios: bool = True,
+        feature_selection_threshold: float = 0.0,
         random_state: int = 42,
         encoding_map: Optional[Dict[str, str]] = None,
     ) -> None:
+        self.fe_level = fe_level
         self.cardinality_threshold = cardinality_threshold
         self.skew_threshold = skew_threshold
         self.outlier_strategy = outlier_strategy
         self.encoding_strategy = encoding_strategy
-        self.interaction_features = interaction_features
+        self.interaction_features = interaction_features if fe_level != "light" else 0
+        if fe_level == "medium":
+            self.interaction_features = min(self.interaction_features, 2)
+        self.enable_ratios = enable_ratios if fe_level != "light" else False
+        self.feature_selection_threshold = feature_selection_threshold
         self.random_state = random_state
         self.encoding_map = encoding_map or {}
 
         # Fitted state (populated by fit_transform)
         self._fitted = False
+        self._low_info_cols: List[str] = []
         self._zero_var_cols: List[str] = []
         self._datetime_cols: List[str] = []
         self._datetime_features: Dict[str, List[str]] = {}
@@ -58,7 +67,13 @@ class FeatureEngineer:
         self._outlier_bounds: Dict[str, Tuple[float, float]] = {}
         self._scaler_map: Dict[str, str] = {}  # col → "standard" | "robust"
         self._interaction_pairs: List[Tuple[str, str]] = []
+        self._ratio_pairs: List[Tuple[str, str]] = []
         self.log: List[str] = []
+
+    def _sanitize_columns(self, X: pd.DataFrame) -> pd.DataFrame:
+        import re
+        X.columns = [re.sub(r'[ \[\]<>{}:",]', '_', str(c)) for c in X.columns]
+        return X
 
     # Public API
 
@@ -67,9 +82,19 @@ class FeatureEngineer:
         X: pd.DataFrame,
         y: pd.Series,
         problem_type: str = "classification",
+        importances: Optional[pd.Series] = None,
     ) -> pd.DataFrame:
         self.log = []
+        self._log(f"Feature engineering level: {self.fe_level.upper()}")
         X = X.copy()
+        
+        # Apply low importance drops first if importances provided
+        if importances is not None and self.feature_selection_threshold > 0:
+            low_imp = importances[importances < self.feature_selection_threshold].index.tolist()
+            self._low_info_cols = [c for c in low_imp if c in X.columns]
+            if self._low_info_cols:
+                X = X.drop(columns=self._low_info_cols)
+                self._log(f"Dropped {len(self._low_info_cols)} low-importance features.")
 
         X = self._fit_zero_variance(X)
         X = self._fit_datetime(X)
@@ -77,8 +102,11 @@ class FeatureEngineer:
         X = self._fit_skewness(X)
         X = self._fit_outliers(X)
         self._fit_adaptive_scaling(X)
-        X = self._fit_interactions(X, y, problem_type)
+        X = self._fit_interactions(X, y, problem_type, importances)
+        if self.enable_ratios:
+            X = self._fit_ratios(X, y, importances)
 
+        X = self._sanitize_columns(X)
         self._fitted = True
         return X
 
@@ -87,13 +115,21 @@ class FeatureEngineer:
             raise RuntimeError("FeatureEngineer has not been fitted yet.")
         X = X.copy()
 
+        if hasattr(self, "_low_info_cols") and self._low_info_cols:
+            cols_to_drop = [c for c in self._low_info_cols if c in X.columns]
+            if cols_to_drop:
+                X = X.drop(columns=cols_to_drop)
+
         X = self._apply_zero_variance(X)
         X = self._apply_datetime(X)
         X = self._apply_high_cardinality(X)
         X = self._apply_skewness(X)
         X = self._apply_outliers(X)
         X = self._apply_interactions(X)
+        if hasattr(self, "enable_ratios") and self.enable_ratios:
+            X = self._apply_ratios(X)
 
+        X = self._sanitize_columns(X)
         return X
 
     # 1. Zero‑variance removal
@@ -225,21 +261,31 @@ class FeatureEngineer:
 
     @staticmethod
     def _target_encode_fit(
-        series: pd.Series, y: pd.Series, n_splits: int = 5,
+        series: pd.Series, y: pd.Series, n_splits: int = 5, smoothing: float = 10.0
     ) -> Dict[Any, float]:
-        """Cross‑validated target encoding to prevent leakage."""
+        """Cross‑validated target encoding to prevent leakage, with smoothing."""
         from sklearn.model_selection import KFold
 
         encoding = pd.Series(np.nan, index=series.index, dtype=float)
         kf = KFold(n_splits=min(n_splits, len(series)), shuffle=True,
                     random_state=42)
+        global_mean = y.mean()
 
         for train_idx, val_idx in kf.split(series):
-            means = y.iloc[train_idx].groupby(series.iloc[train_idx]).mean()
-            encoding.iloc[val_idx] = series.iloc[val_idx].map(means)
+            train_series = series.iloc[train_idx]
+            train_y = y.iloc[train_idx]
+            
+            counts = train_series.value_counts()
+            means = train_y.groupby(train_series).mean()
+            
+            # Smoothing: lambda = count / (count + smoothing)
+            lambda_w = counts / (counts + smoothing)
+            smoothed_means = lambda_w * means + (1 - lambda_w) * global_mean
+            
+            encoding.iloc[val_idx] = series.iloc[val_idx].map(smoothed_means)
 
         # Fill remaining NaN with global mean
-        encoding = encoding.fillna(y.mean())
+        encoding = encoding.fillna(global_mean)
 
         # Final map = per‑category average of CV‑encoded values
         final_map = encoding.groupby(series).mean().to_dict()
@@ -358,6 +404,7 @@ class FeatureEngineer:
 
     def _fit_interactions(
         self, X: pd.DataFrame, y: pd.Series, problem_type: str,
+        importances: Optional[pd.Series] = None
     ) -> pd.DataFrame:
         k = self.interaction_features
         if k <= 0:
@@ -367,11 +414,16 @@ class FeatureEngineer:
         if len(numeric) < 2:
             return X
 
-        # Rank by absolute correlation with target
-        corrs = X[numeric].corrwith(y.astype(float)).abs().sort_values(
-            ascending=False,
-        )
-        top_cols = corrs.head(k).index.tolist()
+        if importances is not None:
+            valid_imp = importances[importances.index.isin(numeric)]
+            if len(valid_imp) >= 2:
+                top_cols = valid_imp.sort_values(ascending=False).head(k).index.tolist()
+            else:
+                corrs = X[numeric].corrwith(y.astype(float)).abs().sort_values(ascending=False)
+                top_cols = corrs.head(k).index.tolist()
+        else:
+            corrs = X[numeric].corrwith(y.astype(float)).abs().sort_values(ascending=False)
+            top_cols = corrs.head(k).index.tolist()
 
         self._interaction_pairs = []
         new_cols: List[str] = []
@@ -384,8 +436,7 @@ class FeatureEngineer:
 
         if new_cols:
             self._log(
-                f"Created {len(new_cols)} interaction feature(s) from top‑{k} "
-                f"numeric columns"
+                f"Generated {len(new_cols)} interaction features from top {len(top_cols)} numeric columns"
             )
 
         return X
@@ -395,6 +446,54 @@ class FeatureEngineer:
             pair_name = f"{c1}__x__{c2}"
             if c1 in X.columns and c2 in X.columns:
                 X[pair_name] = X[c1] * X[c2]
+        return X
+
+    def _fit_ratios(
+        self, X: pd.DataFrame, y: pd.Series, importances: Optional[pd.Series] = None
+    ) -> pd.DataFrame:
+        k = min(self.interaction_features, 3) # Use fewer features for ratios
+        if k <= 1:
+            return X
+            
+        numeric = X.select_dtypes(include="number").columns.tolist()
+        if len(numeric) < 2:
+            return X
+
+        if importances is not None:
+            valid_imp = importances[importances.index.isin(numeric)]
+            if len(valid_imp) >= 2:
+                top_cols = valid_imp.sort_values(ascending=False).head(k).index.tolist()
+            else:
+                corrs = X[numeric].corrwith(y.astype(float)).abs().sort_values(ascending=False)
+                top_cols = corrs.head(k).index.tolist()
+        else:
+            corrs = X[numeric].corrwith(y.astype(float)).abs().sort_values(ascending=False)
+            top_cols = corrs.head(k).index.tolist()
+
+        self._ratio_pairs = []
+        new_cols: List[str] = []
+        for i, c1 in enumerate(top_cols):
+            for c2 in top_cols:
+                if c1 == c2: continue
+                pair_name = f"{c1}__div__{c2}"
+                eps = 1e-5
+                X[pair_name] = X[c1] / (X[c2] + eps)
+                self._ratio_pairs.append((c1, c2))
+                new_cols.append(pair_name)
+
+        if new_cols:
+            self._log(
+                f"Generated {len(new_cols)} ratio features from top {len(top_cols)} numeric columns"
+            )
+
+        return X
+
+    def _apply_ratios(self, X: pd.DataFrame) -> pd.DataFrame:
+        for c1, c2 in getattr(self, "_ratio_pairs", []):
+            pair_name = f"{c1}__div__{c2}"
+            if c1 in X.columns and c2 in X.columns:
+                eps = 1e-5
+                X[pair_name] = X[c1] / (X[c2] + eps)
         return X
 
     def _log(self, message: str) -> None:

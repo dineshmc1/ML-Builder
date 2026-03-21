@@ -128,6 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
                    choices=["cap", "none"], help="Outlier handling: cap or none.")
     p.add_argument("--encoding_strategy", type=str, default=None,
                    choices=["target", "frequency"], help="High-cardinality encoding: target or frequency.")
+    p.add_argument("--fe_level", type=str, default="auto", choices=["auto", "light", "medium", "full"],
+                   help="Feature engineering level (default: auto).")
+    p.add_argument("--enable_ratios", action="store_true", help="Enable generating ratio features.")
+    p.add_argument("--feature_selection_threshold", type=float, default=0.0,
+                   help="Drop features with importance below this threshold after baseline (default: 0.0).")
     return p
 
 
@@ -169,6 +174,9 @@ def run_pipeline(args: argparse.Namespace) -> None:
                      else cfg.get("interaction_features", 0))
     outlier_strat = args.outlier_strategy or cfg.get("outlier_strategy", "cap")
     encoding_strat = args.encoding_strategy or cfg.get("encoding_strategy", "frequency")
+    fe_level_arg = args.fe_level or cfg.get("fe_level", "auto")
+    enable_ratios = getattr(args, "enable_ratios", False) or cfg.get("enable_ratios", False)
+    feat_sel_threshold = args.feature_selection_threshold or cfg.get("feature_selection_threshold", 0.0)
 
     # Step count
     base_steps = 7 if do_fe else 6
@@ -215,7 +223,16 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     # Override pipeline settings based on resource constraints
     do_fe = do_fe and resource_config["enable_fe"]
-    interaction_k = min(interaction_k, resource_config["interaction_k"])
+    if fe_level_arg != "auto":
+        resource_fe_level = fe_level_arg
+    else:
+        resource_fe_level = resource_config.get("fe_level", "medium")
+
+    if interaction_k == 0:  # If user didn't explicitly set it, default to resource config
+        interaction_k = resource_config["interaction_k"]
+    else:
+        interaction_k = min(interaction_k, resource_config["interaction_k"])
+        
     encoding_map = resource_config["encoding_strategies"]
     
     # Restrict models based on dataset size constraints
@@ -226,77 +243,120 @@ def run_pipeline(args: argparse.Namespace) -> None:
     else:
         model_names = resource_config["models_to_run"]
 
-    # 3. Feature Engineering (Phase 3, optional) 
-    fe_engine = None
-    fe_log: list[str] = []
-    scaler_map = None
-
-    if do_fe:
-        from feature_engineering import FeatureEngineer
-
-        step += 1
-        print("\n" + "─" * 72)
-        print(f"  STEP {step} / {total_steps} — Smart Feature Engineering")
-        print("─" * 72)
-
-        fe_engine = FeatureEngineer(
-            cardinality_threshold=cardinality_thr,
-            skew_threshold=skew_thr,
-            outlier_strategy=outlier_strat,
-            encoding_strategy=encoding_strat,
-            interaction_features=interaction_k,
-            random_state=random_state,
-            encoding_map=encoding_map,
-        )
-
-        X_train_clean = fe_engine.fit_transform(
-            X_train_clean, y_train_clean, bundle.problem_type,
-        )
-        X_test_clean = fe_engine.transform(X_test_clean)
-        fe_log = fe_engine.log.copy()
-        scaler_map = fe_engine.get_scalers()
-
-        if not fe_log:
-            print("[FE] No conditional transforms were applied.")
-
-    # N. Feature processing 
+    # 3. Base Feature processing (for Baseline Screening)
     step += 1
     print("\n" + "─" * 72)
-    print(f"  STEP {step} / {total_steps} — Feature processing")
+    print(f"  STEP {step} / {total_steps} — Baseline Feature processing")
     print("─" * 72)
-    preprocessor, num_cols, cat_cols = build_preprocessor(
-        X_train_clean, scaler_map=scaler_map, encoding_map=encoding_map
+    base_preprocessor, num_cols, cat_cols = build_preprocessor(
+        X_train_clean, scaler_map=None, encoding_map=encoding_map
     )
 
-    # Optional feature selection (applied after preprocessing)
-    feature_selector = None
-    if feat_select:
-        preprocessor.fit(X_train_clean)
-        X_train_transformed = preprocessor.transform(X_train_clean)
-        X_train_transformed, feature_selector = select_features(
-            X_train_transformed, y_train_clean, bundle.problem_type,
-            method=feat_select, k=feat_k,
-        )
-
-    # N+1. Baseline screening 
+    # 4. Baseline screening
     step += 1
     print("\n" + "─" * 72)
     print(f"  STEP {step} / {total_steps} — Baseline screening")
     print("─" * 72)
     models = get_models(bundle.problem_type, model_names)
     promising, baseline_scores = baseline_screen(
-        models, preprocessor, X_train_clean, y_train_clean,
+        models, base_preprocessor, X_train_clean, y_train_clean,
         bundle.problem_type, sample_frac=sample_frac, cv=cv_folds,
         random_state=random_state, max_time_seconds=max_time,
     )
 
-    # N+2. Full training on promising models 
+    # 5. Adaptive Feature Engineering
+    fe_engine = None
+    fe_log: list[str] = []
+    scaler_map = None
+
+    if do_fe:
+        from feature_engineering import FeatureEngineer
+        from sklearn.feature_selection import mutual_info_classif, mutual_info_regression
+
+        step += 1
+        print("\n" + "─" * 72)
+        print(f"  STEP {step} / {total_steps} — Smart Feature Engineering")
+        print("─" * 72)
+
+        best_baseline_score = max(baseline_scores.values()) if baseline_scores else 0.0
+
+        # Performance-aware FE level adjustment
+        if fe_level_arg == "auto":
+            if best_baseline_score >= 0.85:
+                print(f"[Pipeline] Baseline performance ({best_baseline_score:.4f}) is strong. Using lightweight FE only.")
+                resource_fe_level = "light"
+            elif best_baseline_score < 0.65:
+                print(f"[Pipeline] Baseline performance ({best_baseline_score:.4f}) is poor. Enabling full FE to extract more signal.")
+                resource_fe_level = "full"
+
+        importances = None
+        if resource_fe_level != "light":
+            print("[Pipeline] Computing baseline feature importances for adaptive FE...")
+            numeric_cols = X_train_clean.select_dtypes(include="number").columns
+            if len(numeric_cols) > 0:
+                X_num = X_train_clean[numeric_cols].fillna(X_train_clean[numeric_cols].median())
+                if bundle.problem_type == "classification":
+                    mi = mutual_info_classif(X_num, y_train_clean, random_state=random_state)
+                else:
+                    mi = mutual_info_regression(X_num, y_train_clean, random_state=random_state)
+                importances = pd.Series(mi, index=numeric_cols)
+
+        fe_engine = FeatureEngineer(
+            fe_level=resource_fe_level,
+            cardinality_threshold=cardinality_thr,
+            skew_threshold=skew_thr,
+            outlier_strategy=outlier_strat,
+            encoding_strategy=encoding_strat,
+            interaction_features=interaction_k,
+            enable_ratios=enable_ratios,
+            feature_selection_threshold=feat_sel_threshold,
+            random_state=random_state,
+            encoding_map=encoding_map,
+        )
+
+        X_train_final = fe_engine.fit_transform(
+            X_train_clean, y_train_clean, problem_type=bundle.problem_type, importances=importances
+        )
+        X_test_final = fe_engine.transform(X_test_clean)
+        fe_log = fe_engine.log.copy()
+        scaler_map = fe_engine.get_scalers()
+
+        if not fe_log:
+            print("[FE] No conditional transforms were applied.")
+    else:
+        # Step increment for alignment
+        step += 1
+        print("\n" + "─" * 72)
+        print(f"  STEP {step} / {total_steps} — Smart Feature Engineering (Skipped)")
+        print("─" * 72)
+        X_train_final = X_train_clean.copy()
+        X_test_final = X_test_clean.copy()
+
+    # 6. Final Feature processing (for Full Training)
+    step += 1
+    print("\n" + "─" * 72)
+    print(f"  STEP {step} / {total_steps} — Final Feature processing")
+    print("─" * 72)
+    final_preprocessor, _, _ = build_preprocessor(
+        X_train_final, scaler_map=scaler_map, encoding_map=encoding_map
+    )
+
+    feature_selector = None
+    if feat_select:
+        final_preprocessor.fit(X_train_final)
+        X_train_transformed = final_preprocessor.transform(X_train_final)
+        X_train_transformed, feature_selector = select_features(
+            X_train_transformed, y_train_clean, bundle.problem_type,
+            method=feat_select, k=feat_k,
+        )
+
+    # 7. Full training on promising models 
     step += 1
     print("\n" + "─" * 72)
     print(f"  STEP {step} / {total_steps} — Full training")
     print("─" * 72)
     trained, full_scores = full_train(
-        promising, preprocessor, X_train_clean, y_train_clean,
+        promising, final_preprocessor, X_train_final, y_train_clean,
         bundle.problem_type, cv=cv_folds, max_time_seconds=max_time,
     )
 
@@ -310,7 +370,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     print(f"  STEP {step} / {total_steps} — Evaluation & selection")
     print("─" * 72)
     results = evaluate_models(
-        trained, X_test_clean, y_test_clean, bundle.problem_type,
+        trained, X_test_final, y_test_clean, bundle.problem_type,
     )
     _print_results(results, bundle.problem_type)
 
@@ -323,12 +383,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
         print("  BONUS — Hyperparameter tuning")
         print("─" * 72)
         tuned = tune_top_models(
-            trained, X_train_clean, y_train_clean,
+            trained, X_train_final, y_train_clean,
             bundle.problem_type, results,
             top_n=2, method=tune_method, n_iter=tune_iter, cv=cv_folds,
         )
         tuned_results = evaluate_models(
-            tuned, X_test_clean, y_test_clean, bundle.problem_type,
+            tuned, X_test_final, y_test_clean, bundle.problem_type,
         )
         _print_results(tuned_results, bundle.problem_type)
         best_name = select_best(tuned_results, bundle.problem_type)
@@ -367,7 +427,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
         print(f"  STEP {step} / {total_steps} — Explainability & Report")
         print("─" * 72)
         explanation_paths = run_explanations(
-            best_model, X_test_clean, y_test_clean,
+            best_model, X_test_final, y_test_clean,
             output_dir=os.path.join(reports_dir, "explanations"),
             use_shap=not skip_shap,
         )

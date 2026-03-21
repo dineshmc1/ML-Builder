@@ -43,21 +43,24 @@ class ResourceManager:
             size_category = "small"
             models_to_run = ["logistic", "rf", "gb", "lightgbm", "xgboost"] if problem_type == "classification" else ["linear", "rf", "gb", "lightgbm", "xgboost"]
             enable_fe = True
+            fe_level = "full"
             interaction_k = 5
         elif n_rows <= self.medium_size_threshold:
             size_category = "medium"
             models_to_run = ["logistic", "rf", "lightgbm", "xgboost"] if problem_type == "classification" else ["linear", "rf", "lightgbm", "xgboost"]
             enable_fe = True
+            fe_level = "medium"
             interaction_k = 2
         else:
             size_category = "large"
             # For large datasets, restrict to scalable models.
             models_to_run = ["logistic", "lightgbm", "xgboost"] if problem_type == "classification" else ["linear", "lightgbm", "xgboost"]
-            enable_fe = False  # Avoid heavy operations safely
+            enable_fe = True  # Enable FE but restrict to safe level
+            fe_level = "light"
             interaction_k = 0
             
         print(f"[ResourceManager] Dataset size: {size_category} ({n_rows} rows)")
-        if not enable_fe and size_category == 'large':
+        if size_category == 'large':
             print("[ResourceManager] Heavy feature engineering (interactions/polynomials) restricted due to memory constraints")
             
         # 2. Encoding Strategy Decisions
@@ -101,6 +104,7 @@ class ResourceManager:
             "size_category": size_category,
             "models_to_run": models_to_run,
             "enable_fe": enable_fe,
+            "fe_level": fe_level,
             "interaction_k": interaction_k,
             "encoding_strategies": encoding_strategies,
             "onehot_features_sum": onehot_count,
