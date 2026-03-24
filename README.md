@@ -13,7 +13,7 @@ A modular, efficient AutoML pipeline for tabular datasets built with Scikit-lear
 | **Resource-Aware Engine** | Dynamically adapts pipeline to dataset size to prevent OOM errors. Restricts models on large datasets, prevents feature explosions by capping one-hot encoding limits, and falls back to frequency encoding. |
 | **Smart Feature Engineering**| Automatic skewness handling (log transforms), outlier capping, cardinality-based encoding (one-hot/frequency/target), and top-k numeric interactions. |
 | **Feature Processing** | Auto column-type detection, `StandardScaler` + encoders, optional mutual-information feature selection |
-| **Model Training** | Baseline screening on subsample with early-stopping, full training on promising models, parallel execution (`n_jobs=-1`), wall-clock time budget |
+| **Model Training** | Epoch-level validation/early-stopping (for GB/LightGBM/XGBoost), baseline screening on subsample, full training on promising models, parallel execution (`n_jobs=-1`), wall-clock time budget |
 | **Model Selection** | Evaluation on held-out test set, best model selection (F1 for classification, RMSE for regression), optional hyperparameter tuning (top-2 models) |
 | **EDA** | Dataset summary, target/feature distribution plots, correlation heatmap |
 | **Explainability** | Built-in/permutation feature importance, SHAP summary and bar plots |
@@ -129,6 +129,7 @@ python main.py \
 | `--test_size` | float | `0.2` | Test split fraction |
 | `--output_dir` | str | `models` | Directory for saved model and metrics |
 | `--config` | str | `config.json` | Path to config JSON file |
+| `--skip_cv_large` | flag | off | Skip cross validation for large datasets (uses 1 validation split) |
 
 ### Feature Engineering & Resource Management Options
 
@@ -288,7 +289,8 @@ from report_generator import generate_report
 - **Resource-Aware Dynamic Tiering** — Automatically switches to scalable tree engines (LightGBM/XGBoost) and disables highly complex feature engineering routines for large datasets to prevent OOM errors.
 - **Leakage Detection** — Automatically drops numeric features with |correlation| > 0.95 to target, and any feature that alone achieves ROC-AUC > 0.98 via a single-feature decision tree test.
 - **ID Column Removal** — Drops columns named `id` or ending with `_id` that have high cardinality.
-- **Early Stopping** — Models scoring in the bottom 30% of baseline range are dropped before full training.
+- **Early Stopping & Logs** — Models scoring in the bottom 30% of baseline range are dropped before full training. Also features live epoch evaluation logging and early stopping (10 continuous rounds with no gain) mapped automatically for Gradient Boosting structures.
+- **Large Dataset CV Skipping** — With the `--skip_cv_large` parameter, large data runs clamp Cross-Validation bounds to a single 85/15 validation split, reducing wait times exponentially.
 - **Time Budget** — Optional `--max_time` prevents runaway training sessions.
 
 ---
