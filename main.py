@@ -133,6 +133,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--enable_ratios", action="store_true", help="Enable generating ratio features.")
     p.add_argument("--feature_selection_threshold", type=float, default=0.0,
                    help="Drop features with importance below this threshold after baseline (default: 0.0).")
+    p.add_argument("--skip_cv_large", action="store_true", help="Skip cross validation for large datasets.")
     return p
 
 
@@ -177,6 +178,7 @@ def run_pipeline(args: argparse.Namespace) -> None:
     fe_level_arg = args.fe_level or cfg.get("fe_level", "auto")
     enable_ratios = getattr(args, "enable_ratios", False) or cfg.get("enable_ratios", False)
     feat_sel_threshold = args.feature_selection_threshold or cfg.get("feature_selection_threshold", 0.0)
+    skip_cv_large = getattr(args, "skip_cv_large", False) or cfg.get("skip_cv_large", False)
 
     # Step count
     base_steps = 7 if do_fe else 6
@@ -230,6 +232,12 @@ def run_pipeline(args: argparse.Namespace) -> None:
         safe_max_level = "medium"
     else:
         safe_max_level = "light"
+        if skip_cv_large:
+            print("[Pipeline] Large dataset detected and --skip_cv_large is active. Setting cv_folds=1 (No CV).")
+            cv_folds = 1
+        elif cv_folds > 2:
+            print(f"[Pipeline] Large dataset detected. Capping cv_folds to 2 (was {cv_folds}) to save time.")
+            cv_folds = 2
 
     fe_level_map = {"off": 0, "light": 1, "medium": 2, "full": 3}
     fe_level_rev = {0: "off", 1: "light", 2: "medium", 3: "full"}
