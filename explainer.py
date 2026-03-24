@@ -60,7 +60,7 @@ def plot_feature_importance(
         # Subsample for speed and memory safety when dense conversion is required
         n_samples = min(10000, X_transformed.shape[0])
         idx = np.random.RandomState(42).choice(X_transformed.shape[0], n_samples, replace=False)
-        X_sample = X_transformed[idx]
+        X_sample = X_transformed.iloc[idx] if hasattr(X_transformed, "iloc") else X_transformed[idx]
         y_sample = y_test.iloc[idx] if hasattr(y_test, "iloc") else y_test.values[idx]
         
         import scipy.sparse
