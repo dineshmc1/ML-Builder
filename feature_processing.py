@@ -67,7 +67,7 @@ def build_preprocessor(
                     "cat_ohe",
                     OneHotEncoder(
                         handle_unknown="ignore",
-                        sparse_output=True,
+                        sparse_output=False,
                     ),
                     onehot_cols,
                 )
@@ -97,7 +97,7 @@ def build_preprocessor(
     preprocessor = ColumnTransformer(
         transformers=transformers,
         remainder="drop",
-        sparse_threshold=0.9, # Prefer keeping it sparse
+        sparse_threshold=0, # Disable sparse to support pandas output natively
     )
 
     n_std = sum(1 for c in numeric_cols
@@ -111,6 +111,9 @@ def build_preprocessor(
         f"[Features] {scale_info}, "
         f"{len(categorical_cols)} categorical column(s)."
     )
+
+    # Resolve LightGBM warnings by keeping dataframe format and column names 
+    preprocessor.set_output(transform="pandas")
 
     return preprocessor, numeric_cols, categorical_cols
 

@@ -223,10 +223,25 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
     # Override pipeline settings based on resource constraints
     do_fe = do_fe and resource_config["enable_fe"]
+    # Determine safe max limit based on dataset size
+    if resource_config["size_category"] == "small":
+        safe_max_level = "full"
+    elif resource_config["size_category"] == "medium":
+        safe_max_level = "medium"
+    else:
+        safe_max_level = "light"
+
+    fe_level_map = {"off": 0, "light": 1, "medium": 2, "full": 3}
+    fe_level_rev = {0: "off", 1: "light", 2: "medium", 3: "full"}
+
     if fe_level_arg != "auto":
         resource_fe_level = fe_level_arg
+        # STRICT CAP: Never exceed the dataset's safe maximum level
+        if fe_level_map.get(resource_fe_level, 0) > fe_level_map[safe_max_level]:
+            print(f"[Pipeline] WARNING: Requested FE level '{resource_fe_level.upper()}' overrides safe limits. Feature engineering level capped at {safe_max_level.upper()} due to {resource_config['size_category']} dataset constraints.")
+            resource_fe_level = safe_max_level
     else:
-        resource_fe_level = resource_config.get("fe_level", "medium")
+        resource_fe_level = resource_config.get("fe_level", safe_max_level)
 
     if interaction_k == 0:  # If user didn't explicitly set it, default to resource config
         interaction_k = resource_config["interaction_k"]
@@ -282,12 +297,19 @@ def run_pipeline(args: argparse.Namespace) -> None:
 
         # Performance-aware FE level adjustment
         if fe_level_arg == "auto":
+            current_idx = fe_level_map.get(resource_fe_level, 1)
             if best_baseline_score >= 0.85:
-                print(f"[Pipeline] Baseline performance ({best_baseline_score:.4f}) is strong. Using lightweight FE only.")
-                resource_fe_level = "light"
+                print(f"[Pipeline] Baseline performance ({best_baseline_score:.4f}) is strong. Downgrading FE to avoid overfitting and save time.")
+                new_idx = max(1, current_idx - 1)
+                resource_fe_level = fe_level_rev[new_idx]
             elif best_baseline_score < 0.65:
-                print(f"[Pipeline] Baseline performance ({best_baseline_score:.4f}) is poor. Enabling full FE to extract more signal.")
-                resource_fe_level = "full"
+                print(f"[Pipeline] Baseline performance ({best_baseline_score:.4f}) is poor. Increasing FE level by one step to extract more signal.")
+                new_idx = current_idx + 1
+                max_idx = fe_level_map[safe_max_level]
+                if new_idx > max_idx:
+                    print(f"[Pipeline] Expansion prevented: Feature engineering level capped at {safe_max_level.upper()} due to {resource_config['size_category']} dataset constraints.")
+                    new_idx = max_idx
+                resource_fe_level = fe_level_rev[new_idx]
 
         importances = None
         if resource_fe_level != "light":

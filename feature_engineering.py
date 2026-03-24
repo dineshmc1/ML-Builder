@@ -68,6 +68,8 @@ class FeatureEngineer:
         self._scaler_map: Dict[str, str] = {}  # col → "standard" | "robust"
         self._interaction_pairs: List[Tuple[str, str]] = []
         self._ratio_pairs: List[Tuple[str, str]] = []
+        self._poly_cols: List[str] = []
+        self._feature_types: Dict[str, str] = {}
         self.log: List[str] = []
 
     def _sanitize_columns(self, X: pd.DataFrame) -> pd.DataFrame:
@@ -88,6 +90,16 @@ class FeatureEngineer:
         self._log(f"Feature engineering level: {self.fe_level.upper()}")
         X = X.copy()
         
+        # Tag original features
+        self._feature_types = {}
+        for col in X.columns:
+            if pd.api.types.is_numeric_dtype(X[col]):
+                self._feature_types[col] = "numeric_original"
+            elif pd.api.types.is_datetime64_any_dtype(X[col]):
+                self._feature_types[col] = "datetime_original"
+            else:
+                self._feature_types[col] = "categorical_original"
+        
         # Apply low importance drops first if importances provided
         if importances is not None and self.feature_selection_threshold > 0:
             low_imp = importances[importances < self.feature_selection_threshold].index.tolist()
@@ -105,6 +117,8 @@ class FeatureEngineer:
         X = self._fit_interactions(X, y, problem_type, importances)
         if self.enable_ratios:
             X = self._fit_ratios(X, y, importances)
+        if self.fe_level == "full":
+            X = self._fit_polynomials(X, importances)
 
         X = self._sanitize_columns(X)
         self._fitted = True
@@ -128,6 +142,8 @@ class FeatureEngineer:
         X = self._apply_interactions(X)
         if hasattr(self, "enable_ratios") and self.enable_ratios:
             X = self._apply_ratios(X)
+        if hasattr(self, "fe_level") and self.fe_level == "full":
+            X = self._apply_polynomials(X)
 
         X = self._sanitize_columns(X)
         return X
@@ -207,6 +223,8 @@ class FeatureEngineer:
         X[f"{col}_wday_sin"] = np.sin(2 * np.pi * dt.dt.weekday / 7)
         X[f"{col}_wday_cos"] = np.cos(2 * np.pi * dt.dt.weekday / 7)
         new_cols += [f"{col}_wday_sin", f"{col}_wday_cos"]
+        for c in new_cols:
+            self._feature_types[c] = "datetime_derived"
         X = X.drop(columns=[col])
         return X, new_cols
 
@@ -243,6 +261,7 @@ class FeatureEngineer:
             self._encoding_maps[col] = enc_map
             global_fallback = y.mean() if self.encoding_strategy == "target" else 0.0
             X[col] = X[col].map(enc_map).fillna(global_fallback).astype(float)
+            self._feature_types[col] = "categorical_encoded"
             self._log(
                 f"Applied {strategy_name} encoding to '{col}' "
                 f"(unique ratio={X[col].nunique()}/{len(X)})"
@@ -299,6 +318,13 @@ class FeatureEngineer:
         self._skew_shifts = {}
 
         for col in numeric:
+            f_type = self._feature_types.get(col, "unknown")
+            if f_type == "categorical_encoded":
+                self._log(f"Skipping log transform for encoded feature '{col}'")
+                continue
+            if f_type != "numeric_original":
+                continue
+
             skew_val = X[col].skew()
             if abs(skew_val) <= self.skew_threshold:
                 continue
@@ -314,7 +340,7 @@ class FeatureEngineer:
             self._skew_shifts[col] = shift
             X[col] = np.log1p(X[col] + shift)
             self._log(
-                f"Applied log1p transform to '{col}' (skew={skew_val:.2f}, "
+                f"Applying log transform to numeric feature '{col}' (skew={skew_val:.2f}, "
                 f"shift={shift:.1f})"
             )
 
@@ -433,6 +459,7 @@ class FeatureEngineer:
                 X[pair_name] = X[c1] * X[c2]
                 self._interaction_pairs.append((c1, c2))
                 new_cols.append(pair_name)
+                self._feature_types[pair_name] = "interaction_derived"
 
         if new_cols:
             self._log(
@@ -480,6 +507,7 @@ class FeatureEngineer:
                 X[pair_name] = X[c1] / (X[c2] + eps)
                 self._ratio_pairs.append((c1, c2))
                 new_cols.append(pair_name)
+                self._feature_types[pair_name] = "interaction_derived"
 
         if new_cols:
             self._log(
@@ -494,6 +522,46 @@ class FeatureEngineer:
             if c1 in X.columns and c2 in X.columns:
                 eps = 1e-5
                 X[pair_name] = X[c1] / (X[c2] + eps)
+        return X
+
+    def _fit_polynomials(self, X: pd.DataFrame, importances: Optional[pd.Series] = None) -> pd.DataFrame:
+        self._poly_cols = []
+        if self.fe_level != "full":
+            return X
+        
+        k = min(self.interaction_features, 5) # limit poly to top 5
+        numeric_original = [c for c, t in self._feature_types.items() if t == "numeric_original" and c in X.columns]
+        
+        if len(numeric_original) == 0:
+            return X
+
+        if importances is not None:
+            valid_imp = importances[importances.index.isin(numeric_original)]
+            if len(valid_imp) > 0:
+                top_cols = valid_imp.sort_values(ascending=False).head(k).index.tolist()
+            else:
+                top_cols = numeric_original[:k]
+        else:
+            top_cols = numeric_original[:k]
+
+        new_cols = []
+        for col in top_cols:
+            poly_name = f"{col}__squared"
+            X[poly_name] = X[col] ** 2
+            self._poly_cols.append(col)
+            new_cols.append(poly_name)
+            self._feature_types[poly_name] = "interaction_derived"
+            
+        if new_cols:
+            self._log(f"Generated {len(new_cols)} polynomial features from top numeric original columns")
+            
+        return X
+
+    def _apply_polynomials(self, X: pd.DataFrame) -> pd.DataFrame:
+        for col in getattr(self, "_poly_cols", []):
+            if col in X.columns:
+                poly_name = f"{col}__squared"
+                X[poly_name] = X[col] ** 2
         return X
 
     def _log(self, message: str) -> None:
