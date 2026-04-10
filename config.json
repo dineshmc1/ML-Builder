@@ -22,5 +22,13 @@
     "skew_threshold": 1.0,
     "interaction_features": 0,
     "outlier_strategy": "cap",
-    "encoding_strategy": "frequency"
+    "encoding_strategy": "frequency",
+    "cold_start": {
+        "k_neighbors": 10,
+        "lambda_sensitivity": 0.5,
+        "memory_models_count": 3,
+        "fallback_models_count": 5,
+        "use_top_k_mean": true,
+        "top_k_for_score": 3
+    }
 }
