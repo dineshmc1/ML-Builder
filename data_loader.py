@@ -113,6 +113,10 @@ def load_dataset(
             "problem_type must be 'classification', 'regression', or None."
         )
 
+    if problem_type == "classification":
+        from sklearn.preprocessing import LabelEncoder
+        y = pd.Series(LabelEncoder().fit_transform(y), name=y.name, index=y.index)
+
     print(f"[DataLoader] Loaded {len(df)} rows, {X.shape[1]} features.")
     print(f"[DataLoader] Problem type: {problem_type}")
 

@@ -191,7 +191,7 @@ def compute_dataset_embedding(
     corr_density = 0.0
     sel_cols = num_cols[:_MAX_FEATURES_FOR_CORR]
     if len(sel_cols) >= 2:
-        corr_matrix = X_clean[sel_cols].corr().values
+        corr_matrix = X_clean[sel_cols].corr().to_numpy(copy=True)
         np.fill_diagonal(corr_matrix, 0)
         n_pairs = len(sel_cols) * (len(sel_cols) - 1) / 2
         if n_pairs > 0:

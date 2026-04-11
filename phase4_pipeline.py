@@ -1,0 +1,284 @@
+import time
+import numpy as np
+import pandas as pd
+import faiss
+from sklearn.datasets import fetch_openml
+
+# Custom imports from our pipeline
+from dataset_embedding import compute_dataset_embedding
+from data_loader import detect_problem_type
+from feature_processing import build_preprocessor
+from model_trainer import get_models, baseline_screen
+from cold_start import (
+    MemoryStore,
+    ColdStartConfig,
+    adaptive_cold_start,
+    compute_adaptive_threshold,
+    _cosine_similarity
+)
+
+# 10-15 OpenML dataset IDs for classification/regression
+DATASET_IDS = [
+    61,     # iris
+    31,     # credit-g
+    153,    # ionosphere
+    44,     # spambase
+    1504,   # steel-plates-fault
+    1494,   # qsar-biodeg
+    1462,   # banknote-authentication
+    37,     # diabetes
+    1464,   # blood-transfusion
+    40945,  # titanic
+    1049,   # pc4
+    40983,  # wilt
+]
+
+def load_and_preprocess_openml(dataset_id):
+    """
+    Helper function to load dataset from OpenML.
+    Returns X (DataFrame), y (Series).
+    """
+    try:
+        print(f"  -> Fetching OpenML ID: {dataset_id}...")
+        data = fetch_openml(data_id=dataset_id, as_frame=True, parser="auto")
+        X = data.data
+        y = data.target
+        
+        # Subsample if dataset is too large, to keep the test fast
+        if len(X) > 2000:
+            rng = np.random.RandomState(42)
+            idx = rng.choice(len(X), 2000, replace=False)
+            X = X.iloc[idx].reset_index(drop=True)
+            y = y.iloc[idx].reset_index(drop=True)
+            
+        # Basic imputation to avoid errors if DataFrame contains NaNs
+        # Our internal pipeline handles this, but ensuring safe targets
+        if y.isna().any():
+            y.fillna(method='ffill', inplace=True)
+            
+        # Detect problem type early and apply categorical encoding if needed
+        problem_type = detect_problem_type(y)
+        if problem_type == "classification":
+            from sklearn.preprocessing import LabelEncoder
+            y = pd.Series(LabelEncoder().fit_transform(y), name=y.name, index=y.index)
+            
+        return X, y
+    except Exception as e:
+        print(f"  -> Failed to load dataset {dataset_id}: {e}")
+        return None, None
+
+def compute_similarity(query_vec, memory_vectors, k=5):
+    """
+    5. Similarity Function
+    Computes cosine similarity between query and multiple memory vectors.
+    Returns top-K similarities and indices.
+    """
+    sims = []
+    for mem_vec in memory_vectors:
+        sims.append(_cosine_similarity(query_vec, mem_vec))
+        
+    sims = np.array(sims)
+    # Sort descending
+    indices = np.argsort(sims)[::-1][:k]
+    return sims[indices], indices
+
+def compute_threshold(similarities, epsilon_lambda=0.5):
+    """
+    6. Adaptive Threshold ε(D)
+    Returns epsilon, mean, std.
+    """
+    return compute_adaptive_threshold(similarities, lambda_sensitivity=epsilon_lambda)
+
+def query_memory(query_vec, store, k=5):
+    """Query FAISS for top-K neighbors."""
+    return store.search(query_vec, top_k=k)
+
+def build_memory(train_ids):
+    """
+    3. Memory Building Phase
+    For each dataset:
+    - Load data
+    - Compute embedding vector
+    - Train all models to find the best
+    - Store mapping in FAISS
+    """
+    print("\n" + "="*50)
+    print("PHASE 3: BUILDING MEMORY STORE")
+    print("="*50)
+    
+    store = MemoryStore()
+    
+    for did in train_ids:
+        print(f"\n[Memory Builder] Processing Dataset {did}")
+        X, y = load_and_preprocess_openml(did)
+        if X is None:
+            continue
+            
+        start_time = time.time()
+        # Find problem type
+        problem_type = detect_problem_type(y)
+        
+        # Extract meta-features
+        vec = compute_dataset_embedding(X, y)
+        
+        # Train models to get best configuration
+        try:
+            preprocessor, _, _ = build_preprocessor(X)
+            all_models = get_models(problem_type)
+            
+            # Use baseline screening on full sample to quickly pick best model
+            _, scores = baseline_screen(
+                all_models, preprocessor, X, y, problem_type,
+                sample_frac=1.0, cv=3, random_state=42
+            )
+            
+            if not scores:
+                print("  -> Training failed. Skipping.")
+                continue
+                
+            best_model_name = max(scores, key=scores.get)
+            best_score = scores[best_model_name]
+            
+        except Exception as e:
+            print(f"  -> Error during training/embedding: {e}")
+            continue
+            
+        elapsed = time.time() - start_time
+        
+        # Store in FAISS memory mapping using MemoryStore
+        metadata = {
+            "dataset_id": did,
+            "problem_type": problem_type,
+            "score": best_score,
+            "time": elapsed
+        }
+        store.add(f"openml_{did}", vec, [best_model_name], metadata)
+        print(f"  -> Successfully committed to memory: Best Model='{best_model_name}' (Score: {best_score:.4f})")
+    
+    print("\n[Memory Builder] Initializing FAISS Index...")
+    store.build_index()
+    return store
+
+def decision_engine(query_vec, store, problem_type):
+    """
+    7. Decision Logic
+    Evaluates similarity S(D, M) vs ε(D) to select path (MEMORY vs FALLBACK).
+    Delegates to the existing `adaptive_cold_start` which implements Phase 4 logic.
+    """
+    cfg = ColdStartConfig(k_neighbors=5, lambda_sensitivity=0.5)
+    
+    # Cold start logic returns decision and thresholds
+    result = adaptive_cold_start(query_vec, store, config=cfg, problem_type=problem_type)
+    
+    decision = "USE MEMORY" if result["decision"] == "memory" else "FALLBACK"
+    return (
+        decision,
+        result["similarity_score"],
+        result["epsilon"],
+        result["models_selected"]
+    )
+
+def main():
+    # Set random seed for reproducibility
+    np.random.seed(42)
+    
+    # 2. Split dataset list: 80% train, 20% test
+    n_train = int(len(DATASET_IDS) * 0.8)
+    train_ids = DATASET_IDS[:n_train]
+    test_ids = DATASET_IDS[n_train:]
+    
+    print(f"Datasets mapped to Knowledge Base (Memory): {train_ids}")
+    print(f"Unseen Datasets for Testing: {test_ids}")
+    
+    # 3. Build Memory
+    store = build_memory(train_ids)
+    
+    print("\n" + "="*50)
+    print("PHASE 4: TESTING SYSTEM LOGIC (ADAPTIVE COLD-START)")
+    print("="*50)
+    
+    metrics = {
+        "memory_decisions": 0,
+        "fallback_decisions": 0,
+        "total_similarity": 0.0,
+        "total_models": 0,
+        "processed_count": 0
+    }
+    
+    for did in test_ids:
+        print(f"\n[Test] Evaluating Dataset {did}...")
+        X, y = load_and_preprocess_openml(did)
+        if X is None:
+            continue
+            
+        problem_type = detect_problem_type(y)
+        
+        # 1. Extract meta-features
+        query_vec = compute_dataset_embedding(X, y)
+        
+        # 2, 3, 4. Managed via Decision Engine
+        decision, similarity, threshold, selected_models = decision_engine(
+            query_vec, store, problem_type
+        )
+        
+        # Track metrics
+        metrics["processed_count"] += 1
+        metrics["total_similarity"] += similarity
+        metrics["total_models"] += len(selected_models)
+        
+        if decision == "USE MEMORY":
+            metrics["memory_decisions"] += 1
+        else:
+            metrics["fallback_decisions"] += 1
+            
+        # 8. Evaluation Logging
+        print("-" * 30)
+        print(f"Dataset: {did}")
+        print(f"Similarity: {similarity:.4f}")
+        print(f"Threshold: {threshold:.4f}")
+        print(f"Decision: {decision}")
+        print(f"Models tried: {len(selected_models)}")
+        
+        # Train selected models to get final performance
+        try:
+            preprocessor, _, _ = build_preprocessor(X)
+            test_models = get_models(problem_type, model_names=selected_models)
+            
+            _, scores = baseline_screen(
+                test_models, preprocessor, X, y, problem_type,
+                sample_frac=1.0, cv=3, random_state=42
+            )
+            
+            if scores:
+                best_model = max(scores, key=scores.get)
+                final_score = scores[best_model]
+            else:
+                final_score = 0.0
+                
+            print(f"Final Score: {final_score:.4f}")
+        except Exception as e:
+            print(f"Final Score: Failed to train - {e}")
+        print("-" * 30)
+
+    # 9. Sanity Checks & Summary
+    print("\n" + "="*50)
+    print("SUMMARY METRICS")
+    print("="*50)
+    if metrics["processed_count"] > 0:
+        total = metrics["processed_count"]
+        pct_mem = (metrics["memory_decisions"] / total) * 100
+        pct_fb = (metrics["fallback_decisions"] / total) * 100
+        avg_sim = metrics["total_similarity"] / total
+        avg_models = metrics["total_models"] / total
+        
+        print(f"% using Memory : {pct_mem:.1f}%")
+        print(f"% Fallback     : {pct_fb:.1f}%")
+        print(f"Avg Similarity : {avg_sim:.4f}")
+        print(f"Avg Models     : {avg_models:.2f}")
+    else:
+        print("No test datasets were successfully processed.")
+        
+    print("\nScript completed successfully.")
+
+if __name__ == "__main__":
+    main()
