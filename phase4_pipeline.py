@@ -182,6 +182,8 @@ def main():
     # Set random seed for reproducibility
     np.random.seed(42)
     
+    all_query_vecs = {}
+    
     # 2. Split dataset list: 80% train, 20% test
     n_train = int(len(DATASET_IDS) * 0.8)
     train_ids = DATASET_IDS[:n_train]
@@ -215,7 +217,15 @@ def main():
         
         # 1. Extract meta-features
         query_vec = compute_dataset_embedding(X, y)
-        
+        all_query_vecs[did] = query_vec
+
+        # ABLATION LOG
+        print(f"  [Embedding] Shape: {query_vec.shape}")
+        print(f"  [Embedding] Mean: {query_vec.mean():.4f}")
+        print(f"  [Embedding] Std:  {query_vec.std():.4f}")
+        print(f"  [Embedding] Min:  {query_vec.min():.4f}")
+        print(f"  [Embedding] Max:  {query_vec.max():.4f}")
+
         # 2, 3, 4. Managed via Decision Engine
         decision, similarity, threshold, selected_models = decision_engine(
             query_vec, store, problem_type
@@ -259,6 +269,13 @@ def main():
         except Exception as e:
             print(f"Final Score: Failed to train - {e}")
         print("-" * 30)
+
+    print("\n[Ablation] Pairwise Cosine Similarities Between Test Embeddings:")
+    dids = list(all_query_vecs.keys())
+    for i in range(len(dids)):
+        for j in range(i+1, len(dids)):
+            sim = _cosine_similarity(all_query_vecs[dids[i]], all_query_vecs[dids[j]])
+            print(f"  Dataset {dids[i]} vs {dids[j]}: {sim:.4f}")
 
     # 9. Sanity Checks & Summary
     print("\n" + "="*50)
