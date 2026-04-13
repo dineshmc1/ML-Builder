@@ -226,10 +226,21 @@ def main():
         print(f"  [Embedding] Min:  {query_vec.min():.4f}")
         print(f"  [Embedding] Max:  {query_vec.max():.4f}")
 
-        # 2, 3, 4. Managed via Decision Engine
-        decision, similarity, threshold, selected_models = decision_engine(
-            query_vec, store, problem_type
-        )
+        # 2, 3, 4. Threshold Stress Test (Replaces decision_engine)
+        print(f"\n  [Threshold Stress Test] Dataset {did}")
+        for lambda_val in [0.3, 0.5, 1.0, 1.5, 2.0]:
+            cfg = ColdStartConfig(k_neighbors=5, lambda_sensitivity=lambda_val)
+            result = adaptive_cold_start(query_vec, store, config=cfg, problem_type=problem_type)
+            print(f"    lambda={lambda_val:.1f} -> decision={result['decision']:<8} | "
+                  f"similarity={result['similarity_score']:.4f} | "
+                  f"eps={result['epsilon']:.4f}")
+            
+            # Preserve variables to allow the rest of the loop to run normally with default behavior (lambda=0.5)
+            if lambda_val == 0.5:
+                decision = "USE MEMORY" if result["decision"] == "memory" else "FALLBACK"
+                similarity = result["similarity_score"]
+                threshold = result["epsilon"]
+                selected_models = result["models_selected"]
         
         # Track metrics
         metrics["processed_count"] += 1
