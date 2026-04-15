@@ -44,7 +44,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 
-EMBEDDING_DIM = 9
+EMBEDDING_DIM = 10
 _RF_ESTIMATORS = 50
 _RF_MAX_DEPTH = 5
 _CORR_THRESHOLD = 0.5
@@ -130,140 +130,72 @@ def compute_dataset_embedding(
     X: pd.DataFrame,
     y: Optional[Union[pd.Series, np.ndarray]] = None,
 ) -> np.ndarray:
-    """Compute a fixed-length ``float32`` embedding for a single dataset.
-
-    Parameters
-    ----------
-    X : pd.DataFrame
-        Feature matrix (raw — missing values and categoricals OK).
-    y : array-like, optional
-        Target vector.  Used to determine task type, entropy, and
-        interaction score.  If ``None``, a target-free embedding is
-        produced.
-
-    Returns
-    -------
-    np.ndarray
-        1-D ``float32`` array of length :data:`EMBEDDING_DIM` (9).
-        Guaranteed NaN-free, suitable for FAISS indexing.
-    """
     if isinstance(X, np.ndarray):
         X = pd.DataFrame(X)
     if y is not None and not isinstance(y, (pd.Series, np.ndarray)):
         y = np.asarray(y)
 
-    n_samples, n_features = X.shape
+    features = []
 
-    # --- A. Basic statistics ---
-    missing_ratio = float(X.isnull().sum().sum()) / max(X.size, 1)
-
-    # --- Preprocess for downstream features ---
-    X_clean = _preprocess(X)
-    num_cols = X_clean.select_dtypes(include="number").columns
-
-    # --- B. Distribution features ---
-    if len(num_cols) > 0:
-        skew_vals = X_clean[num_cols].apply(lambda c: stats.skew(c, nan_policy="omit"))
-        kurt_vals = X_clean[num_cols].apply(lambda c: stats.kurtosis(c, nan_policy="omit"))
-        mean_skewness = float(np.nan_to_num(np.nanmean(skew_vals), nan=0.0))
-        mean_kurtosis = float(np.nan_to_num(np.nanmean(kurt_vals), nan=0.0))
+    # --- NEW: Structural features ---
+    
+    # 1. Log-scaled sample count (captures scale differences better)
+    features.append(np.log1p(X.shape[0]) / 10.0)
+    
+    # 2. Log-scaled feature count
+    features.append(np.log1p(X.shape[1]) / 10.0)
+    
+    # 3. Samples-to-features ratio
+    features.append(np.log1p(X.shape[0] / max(X.shape[1], 1)) / 10.0)
+    
+    # --- NEW: Statistical diversity ---
+    numeric_cols = X.select_dtypes(include=[np.number])
+    
+    if numeric_cols.shape[1] > 0:
+        col_means = numeric_cols.mean()
+        col_stds  = numeric_cols.std().fillna(0)
+        
+        # 4. Mean of column-wise skewness
+        skewness = numeric_cols.apply(lambda c: stats.skew(c.dropna()))
+        features.append(np.clip(skewness.mean() / 5.0, -1, 1))
+        
+        # 5. Fraction of columns that are highly skewed (|skew| > 1)
+        features.append((skewness.abs() > 1).mean())
+        
+        # 6. Mean pairwise correlation (captures feature redundancy)
+        if numeric_cols.shape[1] > 1:
+            corr_matrix = numeric_cols.corr().abs()
+            upper = corr_matrix.where(
+                np.triu(np.ones(corr_matrix.shape), k=1).astype(bool)
+            )
+            features.append(upper.stack().mean())
+        else:
+            features.append(0.0)
+        
+        # 7. Coefficient of variation mean (std/mean ratio)
+        cv = (col_stds / (col_means.abs() + 1e-8)).clip(-10, 10)
+        features.append(np.tanh(cv.mean()))
     else:
-        mean_skewness = 0.0
-        mean_kurtosis = 0.0
+        features.extend([0.0, 0.0, 0.0, 0.0])
 
-    # --- C. Information-theoretic feature ---
-    task_type = _infer_task_type(y)
-    if y is not None and task_type != 1:
-        # Classification target entropy
-        entropy_val = _safe_entropy(np.asarray(y))
+    # --- NEW: Target features ---
+    if y is not None:
+        y_series = pd.Series(y)
+        # 8. Number of unique classes (normalized)
+        n_unique = y_series.nunique()
+        features.append(np.log1p(n_unique) / 5.0)
+        
+        # 9. Target entropy (measures class balance more richly than ratio)
+        value_counts = y_series.value_counts(normalize=True)
+        entropy = stats.entropy(value_counts)
+        features.append(np.clip(entropy / np.log(max(n_unique, 2)), 0, 1))
     else:
-        # Average feature entropy (discretise numeric cols into 10 bins)
-        entropies = []
-        for col in num_cols[:50]:  # cap for speed
-            try:
-                binned = pd.cut(X_clean[col], bins=10, labels=False)
-                entropies.append(_safe_entropy(binned.values))
-            except Exception:
-                entropies.append(0.0)
-        entropy_val = float(np.mean(entropies)) if entropies else 0.0
+        features.extend([0.0, 0.0])
+    
+    # 10. Missing rate
+    features.append(X.isnull().mean().mean())
 
-    # --- D. Correlation structure ---
-    corr_density = 0.0
-    sel_cols = num_cols[:_MAX_FEATURES_FOR_CORR]
-    if len(sel_cols) >= 2:
-        corr_matrix = X_clean[sel_cols].corr().to_numpy(copy=True)
-        np.fill_diagonal(corr_matrix, 0)
-        n_pairs = len(sel_cols) * (len(sel_cols) - 1) / 2
-        if n_pairs > 0:
-            upper = np.triu(np.abs(corr_matrix), k=1)
-            corr_density = float(np.sum(upper > _CORR_THRESHOLD) / n_pairs)
-
-    # --- E. Feature interaction score ---
-    interaction_score = 0.0
-    if y is not None and len(num_cols) >= 2:
-        # Subsample for speed
-        n_rf = min(n_samples, _MAX_ROWS_FOR_RF)
-        rng = np.random.RandomState(_RANDOM_STATE)
-        idx = rng.choice(n_samples, size=n_rf, replace=False)
-        X_rf = X_clean[num_cols].iloc[idx].values
-        y_rf = np.asarray(y)[idx] if isinstance(y, np.ndarray) else pd.Series(y).iloc[idx].values
-
-        try:
-            if task_type in (0, 2):
-                rf = RandomForestClassifier(
-                    n_estimators=_RF_ESTIMATORS,
-                    max_depth=_RF_MAX_DEPTH,
-                    random_state=_RANDOM_STATE,
-                    n_jobs=-1,
-                )
-            else:
-                rf = RandomForestRegressor(
-                    n_estimators=_RF_ESTIMATORS,
-                    max_depth=_RF_MAX_DEPTH,
-                    random_state=_RANDOM_STATE,
-                    n_jobs=-1,
-                )
-
-            # Encode y for classifier if needed
-            y_fit = y_rf
-            if task_type in (0, 2) and not np.issubdtype(y_rf.dtype, np.number):
-                y_fit = LabelEncoder().fit_transform(y_rf.astype(str))
-
-            rf.fit(X_rf, y_fit)
-            importances = rf.feature_importances_
-            # Normalised variance of importances → proxy for interaction
-            imp_std = float(np.std(importances))
-            imp_mean = float(np.mean(importances))
-            interaction_score = imp_std / imp_mean if imp_mean > 1e-12 else 0.0
-        except Exception as exc:
-            logger.warning("RF interaction probe failed: %s", exc)
-            interaction_score = 0.0
-
-    # --- F. Task type encoding (already computed above) ---
-
-    # --- Assemble raw embedding ---
-    raw = np.array(
-        [
-            np.log1p(n_samples),       # 0
-            np.log1p(n_features),      # 1
-            missing_ratio,             # 2
-            mean_skewness,             # 3
-            mean_kurtosis,             # 4
-            entropy_val,               # 5
-            corr_density,              # 6
-            interaction_score,         # 7
-            float(task_type),          # 8
-        ],
-        dtype=np.float64,
-    )
-
-    # --- Normalise & cast ---
-    embedding = _normalize_embedding(raw).astype(np.float32)
-
-    logger.info(
-        "Embedding computed: shape=%s  dtype=%s  range=[%.4f, %.4f]",
-        embedding.shape, embedding.dtype, embedding.min(), embedding.max(),
-    )
+    embedding = np.nan_to_num(np.array(features, dtype=np.float32), nan=0.0)
     return embedding
 
 

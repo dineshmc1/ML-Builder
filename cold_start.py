@@ -174,7 +174,7 @@ def compute_adaptive_threshold(
     similarities: np.ndarray,
     lambda_sensitivity: float = 0.5,
 ) -> Tuple[float, float, float]:
-    """Compute ε(D) = μ_S − λ · σ_S.
+    """Compute ε(D) = μ_S - λ · σ_S.
 
     Returns
     -------
@@ -534,7 +534,11 @@ def adaptive_cold_start(
     )
 
     # STEP 4: Decision logic
-    if s_dm >= epsilon:
+    SIMILARITY_FLOOR = 0.75
+    if s_dm < SIMILARITY_FLOOR:
+        decision = "cold_start"
+        models = get_fallback_models(problem_type, config.fallback_models_count)
+    elif s_dm >= epsilon:
         # HIGH CONFIDENCE — memory-based retrieval
         decision = "memory"
         models = memory.get_models_for_indices(

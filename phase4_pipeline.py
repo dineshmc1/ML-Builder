@@ -19,6 +19,7 @@ from cold_start import (
 
 # 10-15 OpenML dataset IDs for classification/regression
 DATASET_IDS = [
+    # --- Classification (original) ---
     61,     # iris
     31,     # credit-g
     153,    # ionosphere
@@ -31,6 +32,23 @@ DATASET_IDS = [
     40945,  # titanic
     1049,   # pc4
     40983,  # wilt
+
+    # --- Regression (new, dissimilar domain) ---
+    41021,  # california housing
+    42,     # soya (regression)
+    507,    # wind
+    531,    # boston (if available)
+    422,    # wine-quality-red
+    41540,  # diamonds
+
+    # --- More classification (diverse) ---
+    54,     # vehicle
+    181,    # yeast
+    1510,   # wdbc (breast cancer)
+    40668,  # connect-4
+    23,     # cmc (contraceptive)
+    1489,   # phoneme
+    1120,   # magic telescope
 ]
 
 def load_and_preprocess_openml(dataset_id):
@@ -218,6 +236,8 @@ def main():
         # 1. Extract meta-features
         query_vec = compute_dataset_embedding(X, y)
         all_query_vecs[did] = query_vec
+
+        print(f"  [Embedding Raw Values] Dataset {did}: {query_vec}")
 
         # ABLATION LOG
         print(f"  [Embedding] Shape: {query_vec.shape}")
