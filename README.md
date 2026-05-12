@@ -18,6 +18,7 @@ A modular, efficient AutoML pipeline for tabular datasets built with Scikit-lear
 | **EDA** | Dataset summary, target/feature distribution plots, correlation heatmap |
 | **Explainability** | Built-in/permutation feature importance, SHAP summary and bar plots |
 | **Reporting** | Self-contained HTML report with embedded images |
+| **Meta-Learning Memory** | **(Phase 4 New)** Dataset embeddings (meta-features), FAISS-based memory store, adaptive cold-start strategy for model selection. |
 
 ---
 
@@ -36,6 +37,9 @@ MLBuilder/
 ├── eda.py                   # Exploratory data analysis plots
 ├── explainer.py             # Feature importance + SHAP explanations
 ├── report_generator.py      # Self-contained HTML report builder
+├── dataset_embedding.py     # Phase 4: Computes dataset meta-feature embeddings
+├── cold_start.py            # Phase 4: Adaptive memory retrieval & FAISS index
+├── phase4_pipeline.py       # Phase 4: Testing pipeline for memory logic
 ├── config.json              # Default configuration
 ├── requirements.txt         # Python dependencies
 ├── models/                  # Saved best model (.pkl) and metrics (.csv)
@@ -107,6 +111,31 @@ python main.py \
   --interaction_features 5 \
   --report
 ```
+
+---
+
+## Phase 4: Meta-Learning Memory (Current Active Phase)
+
+The project is currently in **Phase 4: Meta-Learning Memory**, specifically having completed sub-phases for **Learned Task Embeddings (Phase 4.1 / Item 4)** and **Adaptive Memory Retrieval Policy (Phase 4.2 / Item 1)**.
+
+### Features in this Phase:
+- **Rich Dataset Embedding Vectors (`dataset_embedding.py`)**: Computes a 10-dimensional `float32` vector that summarizes a dataset's statistical fingerprint (samples, features, missing ratio, skewness, kurtosis, entropy, etc.). This replaces handcrafted meta-features with learned embeddings to capture task similarity.
+- **Adaptive Cold-Start Strategy (`cold_start.py`)**: Given a new dataset embedding, an adaptive decision engine determines whether to use **memory-based retrieval** (leveraging past experiments on similar datasets) or fallback to a **cold-start** broad search.
+- **FAISS Memory Store**: A lightweight in-memory vector database (`MemoryStore`) that indexes dataset embeddings and maps them to the best-performing models.
+- **Dynamic Thresholding $\epsilon(D)$**: Computes similarity scores between the query dataset and memory to adaptively decide the routing threshold.
+
+### Running Phase 4 Pipeline
+A dedicated testing pipeline has been created to evaluate the adaptive cold-start logic against 50 OpenML datasets.
+
+```bash
+python phase4_pipeline.py
+```
+
+This script will:
+1. Build a memory store from a subset of datasets.
+2. Extract meta-features and embeddings for unseen test datasets.
+3. Query the FAISS memory and evaluate the decision engine's routing (Memory vs Fallback).
+4. Save the experiment results to `phase4_results.csv`.
 
 ---
 
@@ -203,6 +232,7 @@ The pipeline executes these steps in order:
 ```
 STEP 1  Load dataset         → CSV/Excel, auto-detect problem type, split 80/20
 STEP 2  Clean data            → Remove duplicates, impute missing values
+[Memory]Adaptive Cold-Start   → Check FAISS memory for similar datasets; if matched, skip broad screening
 [Engine]Resource Analysis     → Analyze dataset size/constraints, cap OH encoding, select model tier
 STEP 3  Smart Feature Eng.    → (Optional) Outliers, log transforms, interactions, encoding maps
 STEP 4  Feature processing    → StandardScaler (numeric) + Target/Freq/OneHot Encoders
@@ -280,6 +310,8 @@ from model_selector import evaluate_models, select_best, tune_top_models, save_m
 from eda import run_eda
 from explainer import run_explanations
 from report_generator import generate_report
+from dataset_embedding import compute_dataset_embedding, build_embedding_matrix
+from cold_start import MemoryStore, adaptive_cold_start, ColdStartConfig
 ```
 
 ---

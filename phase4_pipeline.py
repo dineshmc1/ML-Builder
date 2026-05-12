@@ -3,6 +3,7 @@ import numpy as np
 import pandas as pd
 import faiss
 from sklearn.datasets import fetch_openml
+import random
 
 # Custom imports from our pipeline
 from dataset_embedding import compute_dataset_embedding
@@ -17,39 +18,21 @@ from cold_start import (
     _cosine_similarity
 )
 
-# 10-15 OpenML dataset IDs for classification/regression
+# 50 OpenML dataset IDs for classification/regression
 DATASET_IDS = [
-    # --- Classification (original) ---
-    61,     # iris
-    31,     # credit-g
-    153,    # ionosphere
-    44,     # spambase
-    1504,   # steel-plates-fault
-    1494,   # qsar-biodeg
-    1462,   # banknote-authentication
-    37,     # diabetes
-    1464,   # blood-transfusion
-    40945,  # titanic
-    1049,   # pc4
-    40983,  # wilt
+    # ---------------- CLASSIFICATION ----------------
+    61, 31, 153, 44, 1504, 1494, 1462, 37, 1464, 40945,
+    1049, 40983, 54, 181, 1510, 40668, 23, 1489, 1120, 38,
+    46, 182, 300, 4534, 1067,
 
-    # --- Regression (new, dissimilar domain) ---
-    41021,  # california housing
-    42,     # soya (regression)
-    507,    # wind
-    531,    # boston (if available)
-    422,    # wine-quality-red
-    41540,  # diamonds
+    # ---------------- REGRESSION ----------------
+    41021, 507, 531, 422, 41540, 560, 574, 589, 1199, 42092,
+    42165, 42705, 42726, 42727, 42728,
 
-    # --- More classification (diverse) ---
-    54,     # vehicle
-    181,    # yeast
-    1510,   # wdbc (breast cancer)
-    40668,  # connect-4
-    23,     # cmc (contraceptive)
-    1489,   # phoneme
-    1120,   # magic telescope
+    # ---------------- MORE DIVERSE DATASETS ----------------
+    1590, 151, 11, 14, 16, 18, 22, 50, 188, 307
 ]
+
 
 def load_and_preprocess_openml(dataset_id):
     """
@@ -196,19 +179,31 @@ def decision_engine(query_vec, store, problem_type):
         result["models_selected"]
     )
 
+
 def main():
+    print("\nUsing RANDOM SEED = 42")
     # Set random seed for reproducibility
     np.random.seed(42)
     
     all_query_vecs = {}
     
-    # 2. Split dataset list: 80% train, 20% test
-    n_train = int(len(DATASET_IDS) * 0.8)
-    train_ids = DATASET_IDS[:n_train]
-    test_ids = DATASET_IDS[n_train:]
+    # =====================================================
+    # RANDOMIZED 40/10 SPLIT
+    # =====================================================
+
+    random.seed(42)
+
+    all_ids = DATASET_IDS.copy()
+    random.shuffle(all_ids)
+
+    train_ids = all_ids[:40]
+    test_ids = all_ids[40:50]
     
     print(f"Datasets mapped to Knowledge Base (Memory): {train_ids}")
     print(f"Unseen Datasets for Testing: {test_ids}")
+    print(f"\nTotal datasets : {len(DATASET_IDS)}")
+    print(f"Training sets  : {len(train_ids)}")
+    print(f"Testing sets   : {len(test_ids)}")
     
     # 3. Build Memory
     store = build_memory(train_ids)
@@ -224,18 +219,27 @@ def main():
         "total_models": 0,
         "processed_count": 0
     }
+
+    # Store experiment results
+    results = []
     
     for did in test_ids:
         print(f"\n[Test] Evaluating Dataset {did}...")
         X, y = load_and_preprocess_openml(did)
         if X is None:
+            failed_tests += 1
             continue
+
+        successful_tests += 1
             
         problem_type = detect_problem_type(y)
         
         # 1. Extract meta-features
         query_vec = compute_dataset_embedding(X, y)
         all_query_vecs[did] = query_vec
+
+        print(f"Successful test datasets : {successful_tests}")
+        print(f"Failed test datasets     : {failed_tests}")
 
         print(f"  [Embedding Raw Values] Dataset {did}: {query_vec}")
 
@@ -297,6 +301,16 @@ def main():
                 final_score = 0.0
                 
             print(f"Final Score: {final_score:.4f}")
+            # Save experiment result
+            results.append({
+                "dataset_id": did,
+                "problem_type": problem_type,
+                "similarity": similarity,
+                "threshold": threshold,
+                "decision": decision,
+                "models_tried": len(selected_models),
+                "final_score": final_score
+            })
         except Exception as e:
             print(f"Final Score: Failed to train - {e}")
         print("-" * 30)
@@ -325,6 +339,16 @@ def main():
         print(f"Avg Models     : {avg_models:.2f}")
     else:
         print("No test datasets were successfully processed.")
+
+    # =====================================================
+    # SAVE RESULTS
+    # =====================================================
+
+    results_df = pd.DataFrame(results)
+
+    results_df.to_csv("phase4_results.csv", index=False)
+
+    print("\nSaved results to phase4_results.csv")
         
     print("\nScript completed successfully.")
 
