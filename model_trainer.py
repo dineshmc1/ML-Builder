@@ -11,13 +11,29 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from sklearn.ensemble import (
-    GradientBoostingClassifier,
-    GradientBoostingRegressor,
-    RandomForestClassifier,
-    RandomForestRegressor,
+from sklearn.base import clone
+from sklearn.model_selection import cross_val_score
+from sklearn.pipeline import Pipeline
+from sklearn.compose import ColumnTransformer
+
+from sklearn.linear_model import (
+    LogisticRegression, Ridge, Lasso, ElasticNet,
+    SGDClassifier, SGDRegressor, LinearRegression
 )
-from sklearn.linear_model import LinearRegression, LogisticRegression
+from sklearn.ensemble import (
+    RandomForestClassifier, RandomForestRegressor,
+    GradientBoostingClassifier, GradientBoostingRegressor,
+    ExtraTreesClassifier, ExtraTreesRegressor,
+    AdaBoostClassifier, AdaBoostRegressor,
+    BaggingClassifier, BaggingRegressor
+)
+from sklearn.svm import SVC, SVR
+from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
+from sklearn.naive_bayes import GaussianNB
+from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
+from sklearn.neural_network import MLPClassifier, MLPRegressor
+from lightgbm import LGBMClassifier, LGBMRegressor
+from xgboost import XGBClassifier, XGBRegressor
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import Pipeline
 from sklearn.compose import ColumnTransformer
@@ -25,56 +41,57 @@ from sklearn.compose import ColumnTransformer
 
 # Model catalogue
 
-_CLASSIFICATION_MODELS: Dict[str, Any] = {
-    "logistic": lambda: LogisticRegression(
-        max_iter=1000, random_state=42, verbose=1
-    ),
-    "rf": lambda: RandomForestClassifier(
-        n_estimators=100, n_jobs=-1, random_state=42, verbose=1
-    ),
-    "gb": lambda: GradientBoostingClassifier(
-        n_estimators=100, random_state=42, verbose=1
-    ),
-}
+CLASSIFICATION_MODELS = {
+    "logistic":    LogisticRegression(max_iter=1000, random_state=42),
+    "sgd_clf":     SGDClassifier(max_iter=1000, random_state=42),
+    "knn_clf":     KNeighborsClassifier(n_neighbors=5),
+    "naive_bayes": GaussianNB(),
+    "dt_clf":      DecisionTreeClassifier(random_state=42),
+    "svc":         SVC(probability=True, random_state=42),
+    "mlp_clf":     MLPClassifier(max_iter=500, random_state=42),
+    "rf":          RandomForestClassifier(n_estimators=100, random_state=42),
+    "et_clf":      ExtraTreesClassifier(n_estimators=100, random_state=42),
+    "ada_clf":     AdaBoostClassifier(n_estimators=100, random_state=42),
+    "bag_clf":     BaggingClassifier(n_estimators=20, random_state=42),
+    "gb":          GradientBoostingClassifier(n_estimators=100, random_state=42),
+    "lgbm_clf":    LGBMClassifier(n_estimators=100, random_state=42, verbose=-1),
+    "xgb_clf":     XGBClassifier(n_estimators=100, random_state=42,
+                                  eval_metric="logloss", verbosity=0),
+}  # 14 classification models
 
-_REGRESSION_MODELS: Dict[str, Any] = {
-    "linear": lambda: LinearRegression(n_jobs=-1),
-    "rf": lambda: RandomForestRegressor(
-        n_estimators=100, n_jobs=-1, random_state=42, verbose=1
-    ),
-    "gb": lambda: GradientBoostingRegressor(
-        n_estimators=100, random_state=42, verbose=1
-    ),
-}
-
-try:
-    from lightgbm import LGBMClassifier, LGBMRegressor
-    _CLASSIFICATION_MODELS["lightgbm"] = lambda: LGBMClassifier(n_estimators=100, max_depth=5, num_leaves=20, random_state=42, verbose=1)
-    _REGRESSION_MODELS["lightgbm"] = lambda: LGBMRegressor(n_estimators=100, max_depth=5, num_leaves=20, random_state=42, verbose=1)
-except ImportError:
-    pass
-
-try:
-    from xgboost import XGBClassifier, XGBRegressor
-    _CLASSIFICATION_MODELS["xgboost"] = lambda: XGBClassifier(n_estimators=100, random_state=42, use_label_encoder=False, eval_metric="logloss", verbosity=1)
-    _REGRESSION_MODELS["xgboost"] = lambda: XGBRegressor(n_estimators=100, random_state=42, verbosity=1)
-except ImportError:
-    pass
+REGRESSION_MODELS = {
+    "ridge":       Ridge(),
+    "lasso":       Lasso(max_iter=2000),
+    "elastic":     ElasticNet(max_iter=2000),
+    "sgd_reg":     SGDRegressor(max_iter=1000, random_state=42),
+    "knn_reg":     KNeighborsRegressor(n_neighbors=5),
+    "dt_reg":      DecisionTreeRegressor(random_state=42),
+    "svr":         SVR(),
+    "mlp_reg":     MLPRegressor(max_iter=500, random_state=42),
+    "rf_reg":      RandomForestRegressor(n_estimators=100, random_state=42),
+    "et_reg":      ExtraTreesRegressor(n_estimators=100, random_state=42),
+    "ada_reg":     AdaBoostRegressor(n_estimators=100, random_state=42),
+    "bag_reg":     BaggingRegressor(n_estimators=20, random_state=42),
+    "gb_reg":      GradientBoostingRegressor(n_estimators=100, random_state=42),
+    "lgbm_reg":    LGBMRegressor(n_estimators=100, random_state=42, verbose=-1),
+    "xgb_reg":     XGBRegressor(n_estimators=100, random_state=42, verbosity=0),
+}  # 15 regression models
 
 
 def get_models(
     problem_type: str,
     model_names: Optional[List[str]] = None,
+    n_samples: int = 0
 ) -> Dict[str, Any]:
     # Return a dict of ``{name: estimator_instance}`` for the requested problem type.
     catalogue = (
-        _CLASSIFICATION_MODELS
+        CLASSIFICATION_MODELS
         if problem_type == "classification"
-        else _REGRESSION_MODELS
+        else REGRESSION_MODELS
     )
 
     if model_names is None or "all" in model_names:
-        selected = {k: fn() for k, fn in catalogue.items()}
+        selected = {k: clone(v) for k, v in catalogue.items()}
     else:
         selected = {}
         for name in model_names:
@@ -84,7 +101,12 @@ def get_models(
                     f"{problem_type} catalogue – skipped."
                 )
                 continue
-            selected[name] = catalogue[name]()
+            selected[name] = clone(catalogue[name])
+
+    # Skip SVC for large datasets
+    if n_samples > 5000:
+        selected.pop("svc", None)
+        selected.pop("svr", None)
 
     print(f"[Trainer] Selected models: {list(selected.keys())}")
     return selected
