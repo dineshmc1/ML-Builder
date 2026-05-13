@@ -232,7 +232,11 @@ def main():
         "fallback_decisions": 0,
         "total_similarity": 0.0,
         "total_models": 0,
-        "processed_count": 0
+        "processed_count": 0,
+        # ADD THESE THREE:
+        "total_score_gap": 0.0,
+        "total_models_saved": 0,
+        "score_validation_count": 0
     }
 
     # Store experiment results
@@ -302,35 +306,63 @@ def main():
         print(f"Decision: {decision}")
         print(f"Models tried: {len(selected_models)}")
         
-        # Train selected models to get final performance
+        # ---- STEP 4: SCORE VALIDATION ----
+        cs_score = 0.0
+        full_score = 0.0
+        full_model_count = 0
+
+        # Cold-start: train only selected models
         try:
-            preprocessor, _, _ = build_preprocessor(X)
+            preprocessor_cs, _, _ = build_preprocessor(X)
             test_models = get_models(problem_type, model_names=selected_models)
-            
-            _, scores = baseline_screen(
-                test_models, preprocessor, X, y, problem_type,
+            _, cs_scores = baseline_screen(
+                test_models, preprocessor_cs, X, y, problem_type,
                 sample_frac=1.0, cv=3, random_state=42
             )
-            
-            if scores:
-                best_model = max(scores, key=scores.get)
-                final_score = scores[best_model]
-            else:
-                final_score = 0.0
-                
-            print(f"Final Score: {final_score:.4f}")
-            # Save experiment result
-            results.append({
-                "dataset_id": did,
-                "problem_type": problem_type,
-                "similarity": similarity,
-                "threshold": threshold,
-                "decision": decision,
-                "models_tried": len(selected_models),
-                "final_score": final_score
-            })
+            if cs_scores:
+                cs_score = cs_scores[max(cs_scores, key=cs_scores.get)]
         except Exception as e:
-            print(f"Final Score: Failed to train - {e}")
+            print(f"  [Cold-Start Score] Failed: {e}")
+
+        # Full benchmark: train ALL models
+        try:
+            preprocessor_full, _, _ = build_preprocessor(X)
+            all_models_full = get_models(problem_type)
+            full_model_count = len(all_models_full)
+            _, all_scores = baseline_screen(
+                all_models_full, preprocessor_full, X, y, problem_type,
+                sample_frac=1.0, cv=3, random_state=42
+            )
+            if all_scores:
+                full_score = all_scores[max(all_scores, key=all_scores.get)]
+        except Exception as e:
+            print(f"  [Full Benchmark] Failed: {e}")
+
+        # Print per-dataset comparison
+        score_gap = full_score - cs_score
+        models_saved = full_model_count - len(selected_models)
+        print(f"  Cold-Start Score : {cs_score:.4f} ({len(selected_models)} models tried)")
+        print(f"  Full Train Score : {full_score:.4f} ({full_model_count} models tried)")
+        print(f"  Score Gap        : {score_gap:+.4f}")
+        print(f"  Models Saved     : {models_saved}")
+
+        # Accumulate
+        if full_score > 0.0 and cs_score > 0.0:
+            metrics["total_score_gap"] += score_gap
+            metrics["total_models_saved"] += models_saved
+            metrics["score_validation_count"] += 1
+            
+        # Save experiment result
+        results.append({
+            "dataset_id": did,
+            "problem_type": problem_type,
+            "similarity": similarity,
+            "threshold": threshold,
+            "decision": decision,
+            "models_tried": len(selected_models),
+            "final_score": cs_score,
+            "full_score": full_score
+        })
         print("-" * 30)
 
     print("\n[Ablation] Pairwise Cosine Similarities Between Test Embeddings:")
@@ -355,6 +387,14 @@ def main():
         print(f"% Fallback     : {pct_fb:.1f}%")
         print(f"Avg Similarity : {avg_sim:.4f}")
         print(f"Avg Models     : {avg_models:.2f}")
+
+        if metrics["score_validation_count"] > 0:
+            n = metrics["score_validation_count"]
+            avg_gap = metrics["total_score_gap"] / n
+            avg_saved = metrics["total_models_saved"] / n
+            print(f"Avg Score Gap   : {avg_gap:+.4f}  (target: < 0.05)")
+            print(f"Avg Models Saved: {avg_saved:.1f}   (target: >= 2)")
+            print(f"Validated on    : {n} datasets")
     else:
         print("No test datasets were successfully processed.")
 
