@@ -38,7 +38,11 @@ DATASET_IDS = [
     13, 15, 17, 19, 20, 21, 24, 25, 26, 27, 
     28, 29, 30, 32, 33, 34, 35, 36, 39, 40, 
     41, 42, 43, 45, 47, 48, 49, 51, 52, 53, 
-    55, 56, 57, 58, 59, 60, 62, 63, 64, 65
+    55, 56, 57, 58, 59, 60, 62, 63, 64, 65,
+
+    # ---------------- ADDITIONAL 15 REGRESSION DATASETS ----------------
+    189, 197, 201, 214, 225, 227, 228, 229, 230, 549, 
+    564, 1027, 1028, 1029, 1030
 ]
 
 
@@ -211,8 +215,8 @@ def main():
     all_ids = DATASET_IDS.copy()
     random.shuffle(all_ids)
 
-    train_ids = all_ids[:80]
-    test_ids = all_ids[80:100]
+    train_ids = all_ids[:92]
+    test_ids = all_ids[92:115]
     
     print(f"Datasets mapped to Knowledge Base (Memory): {train_ids}")
     print(f"Unseen Datasets for Testing: {test_ids}")
@@ -351,6 +355,10 @@ def main():
             metrics["total_score_gap"] += score_gap
             metrics["total_models_saved"] += models_saved
             metrics["score_validation_count"] += 1
+            
+        if full_score == 0.0 or cs_score == 0.0:
+            print(f"  [Skipped from validation] Dataset {did} - "
+                  f"cs_score={cs_score:.4f}, full_score={full_score:.4f}")
             
         # Save experiment result
         results.append({
