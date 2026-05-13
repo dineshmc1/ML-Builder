@@ -8,6 +8,7 @@ import random
 # Custom imports from our pipeline
 from dataset_embedding import compute_dataset_embedding
 from data_loader import detect_problem_type
+from data_cleaner import clean
 from feature_processing import build_preprocessor
 from model_trainer import get_models, baseline_screen
 from cold_start import (
@@ -30,7 +31,14 @@ DATASET_IDS = [
     42165, 42705, 42726, 42727, 42728,
 
     # ---------------- MORE DIVERSE DATASETS ----------------
-    1590, 151, 11, 14, 16, 18, 22, 50, 188, 307
+    1590, 151, 11, 14, 16, 18, 22, 50, 188, 307,
+
+    # ---------------- ADDITIONAL 50 DATASETS ----------------
+    2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 
+    13, 15, 17, 19, 20, 21, 24, 25, 26, 27, 
+    28, 29, 30, 32, 33, 34, 35, 36, 39, 40, 
+    41, 42, 43, 45, 47, 48, 49, 51, 52, 53, 
+    55, 56, 57, 58, 59, 60, 62, 63, 64, 65
 ]
 
 
@@ -57,11 +65,18 @@ def load_and_preprocess_openml(dataset_id):
         if y.isna().any():
             y.fillna(method='ffill', inplace=True)
             
+        # Clean X to handle missing values
+        X = clean(X, verbose=False)
+            
         # Detect problem type early and apply categorical encoding if needed
         problem_type = detect_problem_type(y)
-        if problem_type == "classification":
-            from sklearn.preprocessing import LabelEncoder
-            y = pd.Series(LabelEncoder().fit_transform(y), name=y.name, index=y.index)
+        from sklearn.preprocessing import LabelEncoder
+        if y.dtype == object or str(y.dtype) == 'category' or problem_type == 'classification':
+            y = pd.Series(
+                LabelEncoder().fit_transform(y.astype(str)), 
+                name=y.name, 
+                index=y.index
+            )
             
         return X, y
     except Exception as e:
@@ -188,7 +203,7 @@ def main():
     all_query_vecs = {}
     
     # =====================================================
-    # RANDOMIZED 40/10 SPLIT
+    # RANDOMIZED 80/20 SPLIT
     # =====================================================
 
     random.seed(42)
@@ -196,8 +211,8 @@ def main():
     all_ids = DATASET_IDS.copy()
     random.shuffle(all_ids)
 
-    train_ids = all_ids[:40]
-    test_ids = all_ids[40:50]
+    train_ids = all_ids[:80]
+    test_ids = all_ids[80:100]
     
     print(f"Datasets mapped to Knowledge Base (Memory): {train_ids}")
     print(f"Unseen Datasets for Testing: {test_ids}")
@@ -222,6 +237,9 @@ def main():
 
     # Store experiment results
     results = []
+
+    successful_tests = 0
+    failed_tests = 0
     
     for did in test_ids:
         print(f"\n[Test] Evaluating Dataset {did}...")
