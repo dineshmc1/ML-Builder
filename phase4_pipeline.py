@@ -57,6 +57,10 @@ def load_and_preprocess_openml(dataset_id):
         X = data.data
         y = data.target
         
+        if len(X) < 50:
+            print(f"  -> Dataset {dataset_id} too small ({len(X)} samples). Skipping.")
+            return None, None
+            
         # Subsample if dataset is too large, to keep the test fast
         if len(X) > 2000:
             rng = np.random.RandomState(42)
@@ -205,6 +209,7 @@ def main():
     np.random.seed(42)
     
     all_query_vecs = {}
+    DEBUG = False  # Change to True only for validation runs
     
     # =====================================================
     # RANDOMIZED 80/20 SPLIT
@@ -267,30 +272,18 @@ def main():
         print(f"Successful test datasets : {successful_tests}")
         print(f"Failed test datasets     : {failed_tests}")
 
-        print(f"  [Embedding Raw Values] Dataset {did}: {query_vec}")
+        if DEBUG:
+            print(f"  [Raw Vector] Dataset {did}: {np.round(query_vec, 4)}")
+            # ABLATION LOG
+            print(f"  [Embedding] Shape: {query_vec.shape}")
+            print(f"  [Embedding] Mean: {query_vec.mean():.4f}")
+            print(f"  [Embedding] Std:  {query_vec.std():.4f}")
+            print(f"  [Embedding] Min:  {query_vec.min():.4f}")
+            print(f"  [Embedding] Max:  {query_vec.max():.4f}")
 
-        # ABLATION LOG
-        print(f"  [Embedding] Shape: {query_vec.shape}")
-        print(f"  [Embedding] Mean: {query_vec.mean():.4f}")
-        print(f"  [Embedding] Std:  {query_vec.std():.4f}")
-        print(f"  [Embedding] Min:  {query_vec.min():.4f}")
-        print(f"  [Embedding] Max:  {query_vec.max():.4f}")
-
-        # 2, 3, 4. Threshold Stress Test (Replaces decision_engine)
-        print(f"\n  [Threshold Stress Test] Dataset {did}")
-        for lambda_val in [0.3, 0.5, 1.0, 1.5, 2.0]:
-            cfg = ColdStartConfig(k_neighbors=5, lambda_sensitivity=lambda_val)
-            result = adaptive_cold_start(query_vec, store, config=cfg, problem_type=problem_type)
-            print(f"    lambda={lambda_val:.1f} -> decision={result['decision']:<8} | "
-                  f"similarity={result['similarity_score']:.4f} | "
-                  f"eps={result['epsilon']:.4f}")
-            
-            # Preserve variables to allow the rest of the loop to run normally with default behavior (lambda=0.5)
-            if lambda_val == 0.5:
-                decision = "USE MEMORY" if result["decision"] == "memory" else "FALLBACK"
-                similarity = result["similarity_score"]
-                threshold = result["epsilon"]
-                selected_models = result["models_selected"]
+        decision, similarity, threshold, selected_models = decision_engine(
+            query_vec, store, problem_type
+        )
         
         # Track metrics
         metrics["processed_count"] += 1
@@ -373,12 +366,13 @@ def main():
         })
         print("-" * 30)
 
-    print("\n[Ablation] Pairwise Cosine Similarities Between Test Embeddings:")
-    dids = list(all_query_vecs.keys())
-    for i in range(len(dids)):
-        for j in range(i+1, len(dids)):
-            sim = _cosine_similarity(all_query_vecs[dids[i]], all_query_vecs[dids[j]])
-            print(f"  Dataset {dids[i]} vs {dids[j]}: {sim:.4f}")
+    if DEBUG:
+        print("\n[Ablation] Pairwise Cosine Similarities Between Test Embeddings:")
+        dids = list(all_query_vecs.keys())
+        for i in range(len(dids)):
+            for j in range(i+1, len(dids)):
+                sim = _cosine_similarity(all_query_vecs[dids[i]], all_query_vecs[dids[j]])
+                print(f"  Dataset {dids[i]} vs {dids[j]}: {sim:.4f}")
 
     # 9. Sanity Checks & Summary
     print("\n" + "="*50)
