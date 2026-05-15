@@ -29,8 +29,12 @@ import json
 import logging
 import os
 import time
+import pickle
 from dataclasses import dataclass, field, asdict
 from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
+
+DEFAULT_INDEX_PATH = "memory_store.faiss"
+DEFAULT_METADATA_PATH = "memory_store.pkl"
 
 import numpy as np
 
@@ -298,6 +302,10 @@ class DatasetRecord:
     models: List[str] = field(default_factory=list)
     metadata: Dict[str, Any] = field(default_factory=dict)
 
+    @property
+    def key(self) -> str:
+        return f"openml_{self.dataset_id}"
+
 
 class MemoryStore:
     """Lightweight in-memory store for dataset → model mappings.
@@ -336,6 +344,83 @@ class MemoryStore:
             raise ValueError("MemoryStore is empty — nothing to index.")
         matrix = np.vstack([r.embedding for r in self.records]).astype(np.float32)
         self._index = build_faiss_index(matrix, use_ip=False)
+
+    def rebuild_index(self, new_vectors: Optional[Dict[str, np.ndarray]] = None) -> None:
+        """Rebuild index, optionally updating embeddings first."""
+        if new_vectors is not None:
+            for r in self.records:
+                if r.key in new_vectors:
+                    r.embedding = np.asarray(new_vectors[r.key], dtype=np.float32)
+        self.build_index()
+
+    # -- persistence & management -------------------------------------------
+
+    def save_index(self, index_path: str = DEFAULT_INDEX_PATH, metadata_path: str = DEFAULT_METADATA_PATH) -> None:
+        if self._index is None:
+            raise RuntimeError("Cannot save: FAISS index is not built.")
+        faiss.write_index(self._index, index_path)
+        with open(metadata_path, 'wb') as f:
+            pickle.dump(self.records, f)
+        print(f"Saved {len(self.records)} records to {index_path} and {metadata_path}")
+
+    def load_index(self, index_path: str = DEFAULT_INDEX_PATH, metadata_path: str = DEFAULT_METADATA_PATH) -> int:
+        with open(metadata_path, 'rb') as f:
+            loaded_records = pickle.load(f)
+            
+        existing_keys = set(self.get_keys())
+        added_count = 0
+        for r in loaded_records:
+            if r.key not in existing_keys:
+                self.records.append(r)
+                added_count += 1
+                
+        if self.records:
+            self.build_index()
+            
+        return added_count
+
+    def remove_entry(self, dataset_key: str) -> bool:
+        original_len = len(self.records)
+        self.records = [r for r in self.records if r.key != dataset_key]
+        if len(self.records) < original_len:
+            if self.records:
+                self.build_index()
+            else:
+                self._index = None
+            return True
+        return False
+
+    def remove_entries(self, dataset_keys: list) -> int:
+        keys_to_remove = set(dataset_keys)
+        original_len = len(self.records)
+        self.records = [r for r in self.records if r.key not in keys_to_remove]
+        removed_count = original_len - len(self.records)
+        if removed_count > 0:
+            if self.records:
+                self.build_index()
+            else:
+                self._index = None
+        return removed_count
+
+    def get_keys(self) -> list:
+        return [r.key for r in self.records]
+
+    def get_all_vectors(self) -> np.ndarray:
+        if not self.records:
+            return np.empty((0, 17), dtype=np.float32)
+        return self.embeddings
+
+    def get_all_metadata(self) -> list:
+        if not self.records:
+            return []
+        
+        meta_list = []
+        for r in self.records:
+            d = r.metadata.copy()
+            d['dataset_id'] = r.dataset_id
+            d['key'] = r.key
+            meta_list.append(d)
+        return meta_list
 
     # -- queries ------------------------------------------------------------
 

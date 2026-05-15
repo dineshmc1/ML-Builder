@@ -42,7 +42,21 @@ DATASET_IDS = [
 
     # ---------------- ADDITIONAL 15 REGRESSION DATASETS ----------------
     189, 197, 201, 214, 225, 227, 228, 229, 230, 549, 
-    564, 1027, 1028, 1029, 1030
+    564, 1027, 1028, 1029, 1030,
+
+    # ---------------- EXPANDED 300 DATASET POOL ----------------
+    # Multi-class classification
+    23381, 40691, 1468, 1475, 1478, 1480, 1485, 1486, 1487,
+    1488, 4134, 6332, 23517, 40670, 40701,
+    # Binary classification  
+    179, 184, 554, 772, 917, 1019, 1020, 1021, 1040, 1053,
+    1063, 1068, 4538, 6956, 40536,
+    # Regression
+    41702, 42225, 43071, 43439, 43551, 41278, 42563, 41980, 43928, 44027,
+    # High dimensional
+    1169, 1170, 1442, 1443, 1444, 1446, 1447, 1448,
+    # Various / Leftovers
+    34
 ]
 
 
@@ -117,7 +131,7 @@ def query_memory(query_vec, store, k=5):
     """Query FAISS for top-K neighbors."""
     return store.search(query_vec, top_k=k)
 
-def build_memory(train_ids):
+def build_memory(train_ids, store=None):
     """
     3. Memory Building Phase
     For each dataset:
@@ -130,7 +144,8 @@ def build_memory(train_ids):
     print("PHASE 3: BUILDING MEMORY STORE")
     print("="*50)
     
-    store = MemoryStore()
+    if store is None:
+        store = MemoryStore()
     
     for did in train_ids:
         print(f"\n[Memory Builder] Processing Dataset {did}")
@@ -204,6 +219,49 @@ def decision_engine(query_vec, store, problem_type):
 
 
 def main():
+    import os
+    MEMORY_INDEX_PATH = "memory_store.faiss"
+    MEMORY_META_PATH  = "memory_store.pkl"
+    
+    ENABLE_MEMORY_MANAGER = False  # Set True to manage memory
+
+    if ENABLE_MEMORY_MANAGER:
+        print("\n=== MEMORY MANAGER ===")
+        print("1. View all records in memory")
+        print("2. Remove specific dataset (by openml ID)")
+        print("3. Remove multiple datasets")
+        print("4. Clear all memory")
+        print("5. Continue without changes")
+        choice = input("Choice: ").strip()
+        
+        store_tmp = MemoryStore()
+        if os.path.exists(MEMORY_INDEX_PATH):
+            store_tmp.load_index(MEMORY_INDEX_PATH, MEMORY_META_PATH)
+            
+        if choice == "1":
+            for key in store_tmp.get_keys():
+                print(f"  {key}")
+        elif choice == "2":
+            did = input("Enter OpenML ID to remove: ").strip()
+            removed = store_tmp.remove_entry(f"openml_{did}")
+            if removed:
+                store_tmp.save_index(MEMORY_INDEX_PATH, MEMORY_META_PATH)
+                print(f"Removed openml_{did} and saved.")
+        elif choice == "3":
+            dids = input("Enter comma-separated IDs: ").strip()
+            keys = [f"openml_{d.strip()}" for d in dids.split(",")]
+            count = store_tmp.remove_entries(keys)
+            store_tmp.save_index(MEMORY_INDEX_PATH, MEMORY_META_PATH)
+            print(f"Removed {count} records and saved.")
+        elif choice == "4":
+            confirm = input("Type YES to confirm full clear: ")
+            if confirm == "YES":
+                if os.path.exists(MEMORY_INDEX_PATH):
+                    os.remove(MEMORY_INDEX_PATH)
+                if os.path.exists(MEMORY_META_PATH):
+                    os.remove(MEMORY_META_PATH)
+                print("Memory cleared.")
+
     print("\nUsing RANDOM SEED = 42")
     # Set random seed for reproducibility
     np.random.seed(42)
@@ -217,20 +275,67 @@ def main():
 
     random.seed(42)
 
-    all_ids = DATASET_IDS.copy()
+    # Use unique datasets
+    all_ids = list(dict.fromkeys(DATASET_IDS))
     random.shuffle(all_ids)
 
-    train_ids = all_ids[:92]
-    test_ids = all_ids[92:115]
+    train_limit = int(len(all_ids) * 0.8)
+    train_ids = all_ids[:train_limit]
+    test_ids = all_ids[train_limit:]
     
     print(f"Datasets mapped to Knowledge Base (Memory): {train_ids}")
     print(f"Unseen Datasets for Testing: {test_ids}")
-    print(f"\nTotal datasets : {len(DATASET_IDS)}")
+    print(f"\nTotal datasets : {len(all_ids)}")
     print(f"Training sets  : {len(train_ids)}")
     print(f"Testing sets   : {len(test_ids)}")
     
     # 3. Build Memory
-    store = build_memory(train_ids)
+    store = MemoryStore()
+    
+    # Load existing memory if available
+    if os.path.exists(MEMORY_INDEX_PATH):
+        loaded = store.load_index(MEMORY_INDEX_PATH, MEMORY_META_PATH)
+        print(f"Loaded {loaded} existing records from disk")
+        existing_keys = store.get_keys()
+        # Only process datasets not already in memory
+        remaining_train = [d for d in train_ids 
+                          if f"openml_{d}" not in existing_keys]
+        print(f"Skipping {len(train_ids)-len(remaining_train)} "
+              f"already-processed datasets")
+    else:
+        remaining_train = train_ids
+        existing_keys = []
+    
+    # Build memory for new datasets only
+    if remaining_train:
+        store = build_memory(remaining_train, store)
+        store.save_index(MEMORY_INDEX_PATH, MEMORY_META_PATH)
+        print(f"Memory saved. Total records: {len(store.records)}")
+    else:
+        print("Memory fully loaded from disk. No new datasets to process.")
+
+    # After memory is built/loaded, automatically train encoder
+    print("\n" + "="*50)
+    print("PHASE 4.4: TRAINING TASK ENCODER")
+    print("="*50)
+    
+    from task_encoder import train_encoder, encode_all, TaskEncoderConfig
+    
+    cfg = TaskEncoderConfig(
+        input_dim=17, hidden_dim=64, output_dim=32,
+        epochs=100, early_stopping_patience=20
+    )
+    
+    encoder, history = train_encoder(store, config=cfg, 
+                                     force_retrain=False)
+    
+    print(f"Encoder trained. Best epoch: {history['best_epoch']}")
+    print(f"Early stopped: {history['stopped_early']}")
+    
+    # Rebuild FAISS with learned 32-dim embeddings
+    learned_vectors = encode_all(store, encoder)
+    store.rebuild_index(learned_vectors)
+    print(f"FAISS rebuilt with {len(learned_vectors)} learned embeddings")
     
     print("\n" + "="*50)
     print("PHASE 4: TESTING SYSTEM LOGIC (ADAPTIVE COLD-START)")
@@ -266,7 +371,9 @@ def main():
         problem_type = detect_problem_type(y)
         
         # 1. Extract meta-features
-        query_vec = compute_dataset_embedding(X, y)
+        from task_encoder import encode_dataset
+        raw_vec = compute_dataset_embedding(X, y)
+        query_vec = encode_dataset(raw_vec, encoder)
         all_query_vecs[did] = query_vec
 
         print(f"Successful test datasets : {successful_tests}")
