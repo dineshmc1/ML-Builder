@@ -32,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class TaskEncoderConfig:
-    input_dim: int = 17
+    input_dim: int = 10
     hidden_dim: int = 64
     output_dim: int = 32
     margin: float = 1.0
@@ -75,7 +75,7 @@ def get_family(model_name: str) -> str:
 # --- Architecture ---
 
 class SiameseEncoder(nn.Module):
-    def __init__(self, input_dim: int = 17, hidden_dim: int = 64, output_dim: int = 32):
+    def __init__(self, input_dim: int = 10, hidden_dim: int = 64, output_dim: int = 32):
         super().__init__()
         self.fc1 = nn.Linear(input_dim, hidden_dim)
         self.bn1 = nn.BatchNorm1d(hidden_dim)

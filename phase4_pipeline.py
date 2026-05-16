@@ -267,7 +267,7 @@ def main():
     np.random.seed(42)
     
     all_query_vecs = {}
-    DEBUG = False  # Change to True only for validation runs
+    DEBUG = True  # Change to True only for validation runs
     
     # =====================================================
     # RANDOMIZED 80/20 SPLIT
@@ -322,7 +322,7 @@ def main():
     from task_encoder import train_encoder, encode_all, TaskEncoderConfig
     
     cfg = TaskEncoderConfig(
-        input_dim=17, hidden_dim=64, output_dim=32,
+        input_dim=10, hidden_dim=64, output_dim=32,
         epochs=100, early_stopping_patience=20
     )
     

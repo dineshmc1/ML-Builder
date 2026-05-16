@@ -42,13 +42,13 @@ from sklearn.compose import ColumnTransformer
 # Model catalogue
 
 CLASSIFICATION_MODELS = {
-    "logistic":    LogisticRegression(max_iter=1000, random_state=42),
-    "sgd_clf":     SGDClassifier(max_iter=1000, random_state=42),
+    "logistic":    LogisticRegression(max_iter=5000, random_state=42),
+    "sgd_clf":     SGDClassifier(max_iter=5000, random_state=42),
     "knn_clf":     KNeighborsClassifier(n_neighbors=5),
     "naive_bayes": GaussianNB(),
     "dt_clf":      DecisionTreeClassifier(random_state=42),
     "svc":         SVC(probability=True, random_state=42),
-    "mlp_clf":     MLPClassifier(max_iter=2000, early_stopping=True, validation_fraction=0.1, n_iter_no_change=20, random_state=42),
+    "mlp_clf":     MLPClassifier(max_iter=5000, early_stopping=True, validation_fraction=0.1, n_iter_no_change=20, random_state=42),
     "rf":          RandomForestClassifier(n_estimators=100, random_state=42),
     "et_clf":      ExtraTreesClassifier(n_estimators=100, random_state=42),
     "ada_clf":     AdaBoostClassifier(n_estimators=100, random_state=42),
@@ -61,13 +61,13 @@ CLASSIFICATION_MODELS = {
 
 REGRESSION_MODELS = {
     "ridge":       Ridge(),
-    "lasso":       Lasso(max_iter=2000),
-    "elastic":     ElasticNet(max_iter=2000),
-    "sgd_reg":     SGDRegressor(max_iter=1000, random_state=42),
+    "lasso":       Lasso(max_iter=5000),
+    "elastic":     ElasticNet(max_iter=5000),
+    "sgd_reg":     SGDRegressor(max_iter=5000, random_state=42),
     "knn_reg":     KNeighborsRegressor(n_neighbors=5),
     "dt_reg":      DecisionTreeRegressor(random_state=42),
     "svr":         SVR(),
-    "mlp_reg":     MLPRegressor(max_iter=2000, early_stopping=True, validation_fraction=0.1, n_iter_no_change=20, random_state=42),
+    "mlp_reg":     MLPRegressor(max_iter=5000, early_stopping=True, validation_fraction=0.1, n_iter_no_change=20, random_state=42),
     "rf_reg":      RandomForestRegressor(n_estimators=100, random_state=42),
     "et_reg":      ExtraTreesRegressor(n_estimators=100, random_state=42),
     "ada_reg":     AdaBoostRegressor(n_estimators=100, random_state=42),
