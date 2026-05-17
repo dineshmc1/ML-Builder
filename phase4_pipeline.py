@@ -83,6 +83,20 @@ def load_and_preprocess_openml(dataset_id):
                      .replace('<', '').replace('>', '')
             for col in X.columns
         ]
+        
+        # Sanitize categorical values to prevent OneHotEncoder from creating bad feature names
+        import re
+        def clean_json_chars(val):
+            if pd.isna(val):
+                return val
+            return re.sub(r'[\[\]\{\}"\':,<>]', '', str(val))
+            
+        for col in X.select_dtypes(include=['object', 'category']).columns:
+            if str(X[col].dtype) == 'category':
+                new_categories = [clean_json_chars(c) for c in X[col].cat.categories]
+                X[col] = X[col].cat.rename_categories(new_categories)
+            else:
+                X[col] = X[col].astype(str).apply(clean_json_chars)
             
         # Subsample if dataset is too large, to keep the test fast
         if len(X) > 2000:
