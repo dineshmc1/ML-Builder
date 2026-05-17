@@ -143,7 +143,8 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
     norm_b = float(np.linalg.norm(b))
     if norm_a < 1e-12 or norm_b < 1e-12:
         return 0.0
-    return dot / (norm_a * norm_b)
+    similarity = dot / (norm_a * norm_b)
+    return float(np.clip(similarity, 0.0, 1.0))
 
 
 def compute_similarity_scores(

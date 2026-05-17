@@ -75,6 +75,15 @@ def load_and_preprocess_openml(dataset_id):
             print(f"  -> Dataset {dataset_id} too small ({len(X)} samples). Skipping.")
             return None, None
             
+        X.columns = [
+            str(col).replace('[', '').replace(']', '')
+                     .replace('{', '').replace('}', '')
+                     .replace('"', '').replace("'", '')
+                     .replace(':', '_').replace(',', '_')
+                     .replace('<', '').replace('>', '')
+            for col in X.columns
+        ]
+            
         # Subsample if dataset is too large, to keep the test fast
         if len(X) > 2000:
             rng = np.random.RandomState(42)
@@ -513,9 +522,13 @@ def main():
 
     results_df = pd.DataFrame(results)
 
-    results_df.to_csv("phase4_results.csv", index=False)
-
-    print("\nSaved results to phase4_results.csv")
+    try:
+        results_df.to_csv("phase4_results.csv", index=False)
+        print("\nSaved results to phase4_results.csv")
+    except PermissionError:
+        alt_path = "phase4_results_backup.csv"
+        results_df.to_csv(alt_path, index=False)
+        print(f"\nCSV was open. Saved to {alt_path} instead.")
         
     print("\nScript completed successfully.")
 

@@ -84,24 +84,19 @@ def get_models(
     n_samples: int = 0
 ) -> Dict[str, Any]:
     # Return a dict of ``{name: estimator_instance}`` for the requested problem type.
-    catalogue = (
-        CLASSIFICATION_MODELS
-        if problem_type == "classification"
-        else REGRESSION_MODELS
-    )
+    if problem_type == "regression":
+        catalogue = REGRESSION_MODELS
+    else:
+        catalogue = CLASSIFICATION_MODELS
 
     if model_names is None or "all" in model_names:
         selected = {k: clone(v) for k, v in catalogue.items()}
     else:
-        selected = {}
-        for name in model_names:
-            if name not in catalogue:
-                print(
-                    f"[Trainer] Warning: model '{name}' not found in "
-                    f"{problem_type} catalogue – skipped."
-                )
-                continue
-            selected[name] = clone(catalogue[name])
+        selected = {k: clone(v) for k, v in catalogue.items() if k in model_names}
+        if not selected:
+            print(f"  [Trainer] WARNING: None of {model_names} found in "
+                  f"{problem_type} catalogue. Falling back to full catalogue.")
+            selected = {k: clone(v) for k, v in catalogue.items()}
 
     # Skip SVC for large datasets
     if n_samples > 5000:
