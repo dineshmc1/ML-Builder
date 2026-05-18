@@ -70,7 +70,7 @@ def _preprocess(X: pd.DataFrame) -> pd.DataFrame:
         X[num_cols] = X[num_cols].fillna(X[num_cols].median())
 
     # --- Categorical imputation (mode) + label encoding ---
-    cat_cols = X.select_dtypes(include=["object", "category", "bool"]).columns
+    cat_cols = X.select_dtypes(include=["str", "object", "category", "bool"]).columns
     for col in cat_cols:
         mode_val = X[col].mode()
         fill = mode_val.iloc[0] if len(mode_val) else "missing"

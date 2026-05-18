@@ -227,18 +227,63 @@ def decision_engine(query_vec, store, problem_type):
     Evaluates similarity S(D, M) vs ε(D) to select path (MEMORY vs FALLBACK).
     Delegates to the existing `adaptive_cold_start` which implements Phase 4 logic.
     """
-    cfg = ColdStartConfig(k_neighbors=5, lambda_sensitivity=0.5)
-    
-    # Cold start logic returns decision and thresholds
-    result = adaptive_cold_start(query_vec, store, config=cfg, problem_type=problem_type)
+    cfg = ColdStartConfig(
+        k_neighbors=5,
+        lambda_sensitivity=0.5,
+        alpha=0.6,
+        beta=0.3,
+        gamma=0.1,
+        recency_decay_days=30.0
+    )
+    result = adaptive_cold_start(query_vec, store, config=cfg, 
+                                 problem_type=problem_type)
     
     decision = "USE MEMORY" if result["decision"] == "memory" else "FALLBACK"
     return (
         decision,
         result["similarity_score"],
         result["epsilon"],
-        result["models_selected"]
+        result["models_selected"],
+        result["combined_score"],
+        result["winning_key"],
+        result["winning_perf"],
+        result["winning_recency"]
     )
+
+def run_weight_sensitivity_test(query_vec, store, problem_type):
+    """
+    Tests different alpha/beta/gamma combinations and prints results.
+    Used for validation — call manually by setting 
+    RUN_WEIGHT_SENSITIVITY = True at top of main().
+    """
+    from cold_start import ColdStartConfig, adaptive_cold_start
+    weight_configs = [
+        (1.0, 0.0, 0.0),   # pure similarity (baseline)
+        (0.6, 0.3, 0.1),   # default balanced
+        (0.5, 0.4, 0.1),   # performance-heavy
+        (0.5, 0.3, 0.2),   # recency-heavy
+        (0.4, 0.5, 0.1),   # max performance weight
+        (0.7, 0.2, 0.1),   # similarity-heavy
+    ]
+    
+    print("\n[Weight Sensitivity Test]")
+    print(f"{'Alpha':>6} {'Beta':>6} {'Gamma':>6} | "
+          f"{'Decision':>10} {'Combined':>10} {'Epsilon':>10} "
+          f"{'Winning Key':>15}")
+    print("-" * 70)
+    
+    for alpha, beta, gamma in weight_configs:
+        cfg = ColdStartConfig(
+            k_neighbors=5, lambda_sensitivity=0.5,
+            alpha=alpha, beta=beta, gamma=gamma
+        )
+        result = adaptive_cold_start(query_vec, store, config=cfg,
+                                     problem_type=problem_type)
+        print(f"  {alpha:>5.1f} {beta:>6.1f} {gamma:>6.1f} | "
+              f"  {result['decision']:>10} "
+              f"{result['combined_score']:>10.4f} "
+              f"{result['epsilon']:>10.4f} "
+              f"{result['winning_key']:>15}")
 
 
 def main():
@@ -247,6 +292,7 @@ def main():
     MEMORY_META_PATH  = "memory_store.pkl"
     
     ENABLE_MEMORY_MANAGER = False  # Set True to manage memory
+    RUN_WEIGHT_SENSITIVITY = True  # set True for validation runs
 
     if ENABLE_MEMORY_MANAGER:
         print("\n=== MEMORY MANAGER ===")
@@ -290,7 +336,7 @@ def main():
     np.random.seed(42)
     
     all_query_vecs = {}
-    DEBUG = True  # Change to True only for validation runs
+    DEBUG = False  # Change to True only for validation runs
     
     # =====================================================
     # RANDOMIZED 80/20 SPLIT
@@ -411,7 +457,10 @@ def main():
             print(f"  [Embedding] Min:  {query_vec.min():.4f}")
             print(f"  [Embedding] Max:  {query_vec.max():.4f}")
 
-        decision, similarity, threshold, selected_models = decision_engine(
+        if RUN_WEIGHT_SENSITIVITY:
+            run_weight_sensitivity_test(query_vec, store, problem_type)
+
+        decision, similarity, threshold, selected_models, combined, winning_key, winning_perf, winning_recency = decision_engine(
             query_vec, store, problem_type
         )
         
@@ -428,10 +477,14 @@ def main():
         # 8. Evaluation Logging
         print("-" * 30)
         print(f"Dataset: {did}")
-        print(f"Similarity: {similarity:.4f}")
-        print(f"Threshold: {threshold:.4f}")
-        print(f"Decision: {decision}")
-        print(f"Models tried: {len(selected_models)}")
+        print(f"  Similarity (cosine)  : {similarity:.4f}")
+        print(f"  Combined Score       : {combined:.4f}")
+        print(f"  Threshold (epsilon)  : {threshold:.4f}")
+        print(f"  Decision             : {decision}")
+        print(f"  Winning Memory       : {winning_key}")
+        print(f"  Winner Performance   : {winning_perf:.4f}")
+        print(f"  Winner Recency       : {winning_recency:.4f}")
+        print(f"  Models Selected      : {selected_models}")
         
         # ---- STEP 4: SCORE VALIDATION ----
         cs_score = 0.0

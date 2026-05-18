@@ -90,6 +90,11 @@ class ColdStartConfig:
     fallback_models_count: int = 5
     use_top_k_mean: bool = True
     top_k_for_score: int = 3
+    
+    alpha: float = 0.6
+    beta: float = 0.3
+    gamma: float = 0.1
+    recency_decay_days: float = 30.0
 
     def __post_init__(self) -> None:
         if self.k_neighbors < 1:
@@ -100,6 +105,8 @@ class ColdStartConfig:
             raise ValueError("memory_models_count must be >= 1")
         if self.fallback_models_count < 1:
             raise ValueError("fallback_models_count must be >= 1")
+        if abs(self.alpha + self.beta + self.gamma - 1.0) > 0.01:
+            raise ValueError(f"alpha + beta + gamma must sum to 1.0, got {self.alpha + self.beta + self.gamma}")
 
 
 # ---------------------------------------------------------------------------
@@ -145,6 +152,123 @@ def _cosine_similarity(a: np.ndarray, b: np.ndarray) -> float:
         return 0.0
     similarity = dot / (norm_a * norm_b)
     return float(np.clip(similarity, 0.0, 1.0))
+
+def normalize_scores(values: list, higher_is_better: bool = True) -> list:
+    """
+    Min-max normalize a list of floats to [0, 1].
+    If higher_is_better=False (e.g. regression MSE which is negative),
+    flip the sign first so that less negative = higher normalized score.
+    Returns list of floats in [0, 1].
+    Edge case: if all values are identical, return list of 1.0s.
+    """
+    if not values:
+        return []
+    
+    vals = np.array(values, dtype=float)
+    if not higher_is_better:
+        vals = -vals
+        
+    val_min = np.min(vals)
+    val_max = np.max(vals)
+    
+    if val_max == val_min:
+        return [1.0] * len(values)
+        
+    normalized = (vals - val_min) / (val_max - val_min)
+    return normalized.tolist()
+
+def compute_recency_score(record_time: float, decay_days: float = 30.0) -> float:
+    """
+    Computes recency score using exponential decay.
+    
+    Formula: R = exp(-age_in_days / decay_days)
+    
+    Where age_in_days = (current_time - record_time) / 86400
+    
+    Returns float in (0, 1]:
+        - Record added today: R ≈ 1.0
+        - Record added decay_days ago: R ≈ 0.37
+        - Record added 3*decay_days ago: R ≈ 0.05
+    
+    If record_time is 0 or None: return 0.5 (neutral score)
+    Use time.time() for current time.
+    """
+    if not record_time:
+        return 0.5
+    age_in_days = (time.time() - record_time) / 86400.0
+    if age_in_days < 0:
+        age_in_days = 0.0
+    return float(np.exp(-age_in_days / decay_days))
+
+def compute_performance_score(records: list, problem_type: str) -> list:
+    """
+    Extracts and normalizes performance scores from a list of records.
+    
+    For classification: score is accuracy-like (higher is better, 0 to 1).
+        normalize with higher_is_better=True
+    
+    For regression: score is negative MSE (more negative = worse).
+        normalize with higher_is_better=False
+        (so that -0.1 gets higher score than -50000)
+    
+    Returns list of normalized floats in [0, 1], one per record.
+    If a record has no score or score is None: assign 0.5 (neutral).
+    """
+    scores = []
+    higher_is_better = (problem_type == "classification")
+    for r in records:
+        s = r.metadata.get("score")
+        if s is None:
+            scores.append(0.5)
+        else:
+            scores.append(float(s))
+            
+    # Normalize valid scores
+    valid_indices = [i for i, s in enumerate(scores) if records[i].metadata.get("score") is not None]
+    if valid_indices:
+        valid_scores = [scores[i] for i in valid_indices]
+        norm_valid = normalize_scores(valid_scores, higher_is_better=higher_is_better)
+        for idx, norm_val in zip(valid_indices, norm_valid):
+            scores[idx] = norm_val
+    return scores
+
+def compute_adaptive_weighted_score(
+    query_vec: np.ndarray,
+    records: list,
+    similarities: list,
+    problem_type: str,
+    config: ColdStartConfig
+) -> list:
+    """
+    Computes the weighted multi-factor score for each candidate record.
+    
+    Steps:
+    1. Normalize similarity scores to [0, 1] using normalize_scores()
+       (similarities are already cosine similarities, clip to [0,1] first)
+    2. Compute performance scores using compute_performance_score()
+    3. Compute recency scores using compute_recency_score() for each record
+    4. Combine: Score = alpha * S + beta * P + gamma * R
+    5. Return list of combined scores, one per record
+    
+    Log each record's breakdown at DEBUG level:
+        [Retrieval] key=openml_X | sim=0.94 | perf=0.87 | rec=0.92 | 
+        combined=0.917
+    """
+    sims_norm = normalize_scores([float(np.clip(s, 0.0, 1.0)) for s in similarities], higher_is_better=True)
+    perfs_norm = compute_performance_score(records, problem_type)
+    recs_norm = [compute_recency_score(r.metadata.get("time"), config.recency_decay_days) for r in records]
+    
+    combined = []
+    for i, r in enumerate(records):
+        s = sims_norm[i]
+        p = perfs_norm[i]
+        rec = recs_norm[i]
+        score = config.alpha * s + config.beta * p + config.gamma * rec
+        combined.append(score)
+        logger.debug(
+            f"[Retrieval] key={r.key} | sim={s:.4f} | perf={p:.4f} | rec={rec:.4f} | combined={score:.4f}"
+        )
+    return combined
 
 
 def compute_similarity_scores(
@@ -586,6 +710,13 @@ def adaptive_cold_start(
             decision="cold_start",
             epsilon=0.0,
             similarity_score=0.0,
+            combined_score=0.0,
+            alpha=config.alpha,
+            beta=config.beta,
+            gamma=config.gamma,
+            winning_key="",
+            winning_perf=0.0,
+            winning_recency=0.0,
             mu_s=0.0,
             sigma_s=0.0,
             similarities=[],
@@ -607,30 +738,45 @@ def adaptive_cold_start(
         query_embedding, memory.embeddings, neighbor_idx,
     )
 
-    # STEP 2: Compute adaptive threshold ε(D)
-    epsilon, mu_s, sigma_s = compute_adaptive_threshold(
-        sims, config.lambda_sensitivity,
+    # STEP 2: Retrieve records and compute combined scores
+    candidates = [memory.records[i] for i in neighbor_idx]
+    combined_scores = compute_adaptive_weighted_score(
+        query_embedding, candidates, sims, problem_type, config
     )
-
-    # STEP 3: Compute overall similarity score S(D, M)
-    s_dm = compute_overall_similarity(
-        sims,
-        use_top_k_mean=config.use_top_k_mean,
-        top_k=config.top_k_for_score,
-    )
+    
+    # STEP 3: Identify winner and threshold
+    best_idx_in_k = int(np.argmax(combined_scores))
+    best_combined = combined_scores[best_idx_in_k]
+    best_sim = float(sims[best_idx_in_k])
+    winner_record = candidates[best_idx_in_k]
+    
+    # Epsilon on combined scores
+    mu_c = float(np.mean(combined_scores))
+    sigma_c = float(np.std(combined_scores))
+    epsilon = mu_c - config.lambda_sensitivity * sigma_c
+    
+    # Performance/recency extraction for winner
+    perfs = compute_performance_score([winner_record], problem_type)
+    winner_perf = perfs[0]
+    winner_recency = compute_recency_score(winner_record.metadata.get("time"), config.recency_decay_days)
 
     # STEP 4: Decision logic
     SIMILARITY_FLOOR = 0.75
-    if s_dm < SIMILARITY_FLOOR:
+    # Use raw similarity of the winner to check the absolute floor
+    if best_sim < SIMILARITY_FLOOR:
         decision = "cold_start"
         models = get_fallback_models(problem_type, config.fallback_models_count)
-    elif s_dm >= epsilon:
+    elif best_combined >= epsilon:
         # HIGH CONFIDENCE — memory-based retrieval
         decision = "memory"
-        models = memory.get_models_for_indices(
-            neighbor_idx, top_n=config.memory_models_count,
-        )
-        # Ensure we have at least *some* models
+        sorted_pairs = sorted(zip(combined_scores, candidates), key=lambda x: x[0], reverse=True)
+        models = []
+        for _, rec in sorted_pairs:
+            m = rec.metadata.get("best_model")
+            if m and m not in models:
+                models.append(m)
+            if len(models) >= config.memory_models_count:
+                break
         if not models:
             models = get_fallback_models(problem_type, config.memory_models_count)
     else:
@@ -642,9 +788,16 @@ def adaptive_cold_start(
     result = ColdStartResult(
         decision=decision,
         epsilon=round(epsilon, 6),
-        similarity_score=round(s_dm, 6),
-        mu_s=round(mu_s, 6),
-        sigma_s=round(sigma_s, 6),
+        similarity_score=round(best_sim, 6),
+        combined_score=round(best_combined, 6),
+        alpha=config.alpha,
+        beta=config.beta,
+        gamma=config.gamma,
+        winning_key=winner_record.key,
+        winning_perf=round(winner_perf, 6),
+        winning_recency=round(winner_recency, 6),
+        mu_s=round(mu_c, 6),
+        sigma_s=round(sigma_c, 6),
         similarities=[round(float(s), 6) for s in np.sort(sims)[::-1]],
         neighbor_indices=[int(i) for i in neighbor_idx],
         models_selected=models,
@@ -656,9 +809,9 @@ def adaptive_cold_start(
         cs_logger.log(result)
 
     logger.info(
-        "[ColdStart] decision=%s | S(D,M)=%.4f | ε(D)=%.4f | "
-        "μ=%.4f | σ=%.4f | models=%s",
-        decision, s_dm, epsilon, mu_s, sigma_s, models,
+        "[ColdStart] decision=%s | S(D,M)=%.4f | C(D,M)=%.4f | ε(D)=%.4f | "
+        "μ_c=%.4f | σ_c=%.4f | models=%s",
+        decision, best_sim, best_combined, epsilon, mu_c, sigma_c, models,
     )
 
     return result
