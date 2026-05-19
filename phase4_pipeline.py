@@ -288,6 +288,9 @@ def run_weight_sensitivity_test(query_vec, store, problem_type):
 
 def main():
     import os
+    from datetime import datetime
+    from wandb_logger import init_run, finish, log
+    
     MEMORY_INDEX_PATH = "memory_store.faiss"
     MEMORY_META_PATH  = "memory_store.pkl"
     
@@ -357,6 +360,33 @@ def main():
     print(f"\nTotal datasets : {len(all_ids)}")
     print(f"Training sets  : {len(train_ids)}")
     print(f"Testing sets   : {len(test_ids)}")
+    
+    init_run(
+        run_name=f"phase5_{datetime.now().strftime('%Y%m%d_%H%M')}",
+        config={
+            # Memory config
+            "n_train_datasets": len(train_ids),
+            "n_test_datasets":  len(test_ids),
+            "memory_index_path": MEMORY_INDEX_PATH,
+
+            # Encoder config
+            "encoder_input_dim": 17,
+            "encoder_output_dim": 32,
+            "encoder_epochs": 100,
+
+            # Retrieval config
+            "alpha": 0.6,
+            "beta": 0.3,
+            "gamma": 0.1,
+            "k_neighbors": 5,
+            "lambda_sensitivity": 0.5,
+            "similarity_floor": 0.75,
+
+            # Model catalogue
+            "n_models_clf": 14,
+            "n_models_reg": 15,
+        }
+    )
     
     # 3. Build Memory
     store = MemoryStore()
@@ -580,6 +610,16 @@ def main():
             print(f"Avg Score Gap   : {avg_gap:+.4f}  (target: < 0.05)")
             print(f"Avg Models Saved: {avg_saved:.1f}   (target: >= 2)")
             print(f"Validated on    : {n} datasets")
+            
+            n_validated = n
+            log({
+                "summary/pct_memory":       pct_mem,
+                "summary/pct_fallback":     pct_fb,
+                "summary/avg_similarity":   avg_sim,
+                "summary/avg_score_gap":    avg_gap,
+                "summary/avg_models_saved": avg_saved,
+                "summary/validated_count":  n_validated,
+            })
     else:
         print("No test datasets were successfully processed.")
 
@@ -598,6 +638,8 @@ def main():
         print(f"\nCSV was open. Saved to {alt_path} instead.")
         
     print("\nScript completed successfully.")
+    
+    finish()
 
 if __name__ == "__main__":
     main()
