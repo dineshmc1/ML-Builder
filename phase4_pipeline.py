@@ -18,6 +18,10 @@ from cold_start import (
     compute_adaptive_threshold,
     _cosine_similarity
 )
+from heuristics import get_heuristic_suggestions
+from llm_suggester import get_llm_suggestions
+from routing_engine import RoutingConfig, compute_routing_score
+from config import USE_LLM
 
 # 50 OpenML dataset IDs for classification/regression
 DATASET_IDS = [
@@ -221,33 +225,90 @@ def build_memory(train_ids, store=None):
     store.build_index()
     return store
 
-def decision_engine(query_vec, store, problem_type):
-    """
-    7. Decision Logic
-    Evaluates similarity S(D, M) vs ε(D) to select path (MEMORY vs FALLBACK).
-    Delegates to the existing `adaptive_cold_start` which implements Phase 4 logic.
-    """
-    cfg = ColdStartConfig(
-        k_neighbors=5,
-        lambda_sensitivity=0.5,
-        alpha=0.6,
-        beta=0.3,
-        gamma=0.1,
-        recency_decay_days=30.0
-    )
-    result = adaptive_cold_start(query_vec, store, config=cfg, 
+ROUTING_CFG = RoutingConfig(
+    lambda_memory=0.6,
+    lambda_llm=0.2,
+    lambda_heuristic=0.2,
+    use_llm=USE_LLM,
+    top_k_output=3
+)
+
+def extract_meta_features(X, y) -> dict:
+    """Converts X, y into meta-features dict for heuristics + LLM."""
+    import numpy as np
+    numeric_cols = X.select_dtypes(include=[np.number])
+    cat_cols = X.select_dtypes(exclude=[np.number])
+    n_samples, n_cols = X.shape
+    n_num = numeric_cols.shape[1]
+    n_cat = cat_cols.shape[1]
+    n_classes = y.nunique()
+
+    return {
+        "n_samples":         n_samples,
+        "n_features":        n_cols,
+        "num_ratio":         n_num / max(n_cols, 1),
+        "cat_ratio":         n_cat / max(n_cols, 1),
+        "missing_rate":      X.isnull().mean().mean(),
+        "skewness_mean":     numeric_cols.skew().mean() 
+                             if n_num > 0 else 0.0,
+        "mean_corr":         numeric_cols.corr().abs().values
+                             [np.triu_indices(n_num, k=1)].mean()
+                             if n_num > 1 else 0.0,
+        "n_classes":         int(n_classes),
+        "is_binary":         n_classes == 2,
+        "target_entropy":    float(-(y.value_counts(normalize=True)
+                             * np.log(y.value_counts(normalize=True)
+                             + 1e-10)).sum()),
+        "majority_class_ratio": float(y.value_counts(normalize=True)
+                                      .iloc[0])
+    }
+
+def decision_engine(query_vec, store, problem_type, 
+                    meta_features, dataset_id):
+
+    # Signal 1: Memory (existing adaptive cold-start)
+    cfg = ColdStartConfig(k_neighbors=5, lambda_sensitivity=0.5,
+                          alpha=0.6, beta=0.3, gamma=0.1)
+    result = adaptive_cold_start(query_vec, store, config=cfg,
                                  problem_type=problem_type)
-    
-    decision = "USE MEMORY" if result["decision"] == "memory" else "FALLBACK"
+    memory_models = result["models_selected"]
+    memory_score  = result["combined_score"]
+
+    # Signal 2: LLM suggestions
+    if ROUTING_CFG.use_llm:
+        llm_models, llm_reasoning, llm_ok = get_llm_suggestions(
+            meta_features, problem_type, dataset_id
+        )
+    else:
+        llm_models, llm_reasoning = [], ""
+
+    # Signal 3: Heuristics
+    heuristic_models = get_heuristic_suggestions(
+        meta_features, problem_type
+    )
+
+    # Combine via R(D)
+    ranked_models, signal_scores = compute_routing_score(
+        memory_models=memory_models,
+        memory_score=memory_score,
+        llm_models=llm_models,
+        heuristic_models=heuristic_models,
+        config=ROUTING_CFG,
+        problem_type=problem_type,
+        dataset_id=str(dataset_id)
+    )
+
+    decision = "USE MEMORY" if result["decision"] == "memory" \
+               else "FALLBACK"
+
     return (
         decision,
         result["similarity_score"],
         result["epsilon"],
-        result["models_selected"],
+        ranked_models,          # replaces old selected_models
         result["combined_score"],
-        result["winning_key"],
-        result["winning_perf"],
-        result["winning_recency"]
+        llm_reasoning,
+        signal_scores
     )
 
 def run_weight_sensitivity_test(query_vec, store, problem_type):
@@ -490,8 +551,13 @@ def main():
         if RUN_WEIGHT_SENSITIVITY:
             run_weight_sensitivity_test(query_vec, store, problem_type)
 
-        decision, similarity, threshold, selected_models, combined, winning_key, winning_perf, winning_recency = decision_engine(
-            query_vec, store, problem_type
+        # Extract meta_features dict from X and y
+        meta_features = extract_meta_features(X, y)
+
+        decision, similarity, threshold, selected_models, \
+        combined, llm_reasoning, signal_scores = decision_engine(
+            query_vec, store, problem_type, 
+            meta_features, did
         )
         
         # Track metrics
@@ -511,9 +577,6 @@ def main():
         print(f"  Combined Score       : {combined:.4f}")
         print(f"  Threshold (epsilon)  : {threshold:.4f}")
         print(f"  Decision             : {decision}")
-        print(f"  Winning Memory       : {winning_key}")
-        print(f"  Winner Performance   : {winning_perf:.4f}")
-        print(f"  Winner Recency       : {winning_recency:.4f}")
         print(f"  Models Selected      : {selected_models}")
         
         # ---- STEP 4: SCORE VALIDATION ----
