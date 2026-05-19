@@ -14,3 +14,4 @@ online_casino.csv
 *.xlsx
 *.html
 *.png
+.env
