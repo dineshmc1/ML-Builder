@@ -11,6 +11,7 @@ import random
 import logging
 from dataclasses import dataclass
 from typing import Dict, Any, Tuple
+from wandb_logger import log, log_artifact
 
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -246,6 +247,14 @@ def train_encoder(store: MemoryStore, config: TaskEncoderConfig = None, force_re
 
         scheduler.step(avg_val_loss)
 
+        log({
+            "encoder/epoch":        epoch,
+            "encoder/train_loss":   avg_train_loss,
+            "encoder/val_loss":     avg_val_loss,
+            "encoder/lr":           optimizer.param_groups[0]['lr'],
+            "encoder/stopped_early": False,
+        })
+
         if epoch % 10 == 0 or epoch == 1:
             current_lr = optimizer.param_groups[0]['lr']
             print(f"  Epoch {epoch:03d} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f} | LR: {current_lr:.6f}")
@@ -255,6 +264,7 @@ def train_encoder(store: MemoryStore, config: TaskEncoderConfig = None, force_re
             history_dict["best_epoch"] = epoch
             epochs_no_improve = 0
             torch.save(encoder.state_dict(), config.encoder_save_path)
+            log_artifact(config.encoder_save_path, "model", "task-encoder")
         else:
             epochs_no_improve += 1
             if epochs_no_improve >= config.early_stopping_patience:
@@ -264,6 +274,15 @@ def train_encoder(store: MemoryStore, config: TaskEncoderConfig = None, force_re
 
     encoder.load_state_dict(torch.load(config.encoder_save_path, map_location=device, weights_only=True))
     encoder.eval()
+    
+    log({
+        "encoder/best_epoch":      history_dict["best_epoch"],
+        "encoder/final_val_loss":  best_val_loss,
+        "encoder/stopped_early":   history_dict["stopped_early"],
+        "encoder/n_datasets":      len(store.records),
+        "encoder/n_pairs_trained": len(train_pairs),
+    })
+    
     return encoder, history_dict
 
 def encode_dataset(raw_vec: np.ndarray, encoder: nn.Module) -> np.ndarray:
