@@ -20,15 +20,33 @@ Response format:
   "reasoning": "one sentence explanation"
 }
 
-Valid model names for classification:
-logistic, sgd_clf, knn_clf, naive_bayes, dt_clf, svc, mlp_clf,
-rf, et_clf, ada_clf, bag_clf, gb, lgbm_clf, xgb_clf
-
-Valid model names for regression:
+CRITICAL RULE: For regression problems you MUST only use these exact names:
 ridge, lasso, elastic, sgd_reg, knn_reg, dt_reg, svr, mlp_reg,
 rf_reg, et_reg, ada_reg, bag_reg, gb_reg, lgbm_reg, xgb_reg
 
+For classification problems you MUST only use these exact names:
+logistic, sgd_clf, knn_clf, naive_bayes, dt_clf, svc, mlp_clf,
+rf, et_clf, ada_clf, bag_clf, gb, lgbm_clf, xgb_clf
+
+NEVER use 'linear', 'random_forest', 'gradient_boosting' or any 
+other generic names. Use ONLY the exact names above.
+
 Return exactly 3 model names, most promising first."""
+
+def validate_model_names(suggestions: list, problem_type: str) -> list:
+    valid_clf = {"logistic","sgd_clf","knn_clf","naive_bayes",
+                 "dt_clf","svc","mlp_clf","rf","et_clf","ada_clf",
+                 "bag_clf","gb","lgbm_clf","xgb_clf"}
+    valid_reg = {"ridge","lasso","elastic","sgd_reg","knn_reg",
+                 "dt_reg","svr","mlp_reg","rf_reg","et_reg",
+                 "ada_reg","bag_reg","gb_reg","lgbm_reg","xgb_reg"}
+    
+    valid = valid_clf if problem_type == "classification" else valid_reg
+    cleaned = [m for m in suggestions if m in valid]
+    
+    if not cleaned:
+        print(f"  [LLM] All returned names invalid. Returning empty.")
+    return cleaned
 
 
 def get_llm_suggestions(meta_features: dict, 
@@ -65,20 +83,25 @@ Suggest the 3 best models for this dataset."""
                 {"role": "system", "content": LLM_SYSTEM_PROMPT},
                 {"role": "user", "content": prompt}
             ],
-            max_tokens=200
+            max_tokens=2000
         )
         
         latency_ms = (time.time() - start) * 1000
-        raw = response.choices[0].message.content.strip()
-
-        # Strip markdown fences if present
-        if raw.startswith("```"):
-            raw = raw.split("```")[1]
-            if raw.startswith("json"):
-                raw = raw[4:]
+        content = response.choices[0].message.content
+        if not content:
+            raise ValueError("LLM returned empty content")
+        
+        # Use regex to pluck the JSON object directly from the response,
+        # completely bypassing <think> blocks or conversational padding.
+        import re
+        json_match = re.search(r'\{[\s\S]*\}', content)
+        if json_match:
+            raw = json_match.group(0)
+        else:
+            raw = content.strip()
 
         parsed = json.loads(raw)
-        suggestions = parsed.get("suggestions", [])
+        suggestions = validate_model_names(parsed.get("suggestions", []), problem_type)
         reasoning = parsed.get("reasoning", "")
 
         log({

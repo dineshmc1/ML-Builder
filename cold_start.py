@@ -639,10 +639,10 @@ class ColdStartLogger:
 # These mirror the model keys used in model_trainer.py.
 _DEFAULT_MEMORY_MODELS: List[str] = ["rf", "gb", "lightgbm"]
 _DEFAULT_FALLBACK_MODELS_CLF: List[str] = [
-    "logistic", "rf", "gb", "lightgbm", "xgboost",
+    "logistic", "rf", "gb", "lgbm_clf", "xgb_clf",
 ]
 _DEFAULT_FALLBACK_MODELS_REG: List[str] = [
-    "linear", "rf", "gb", "lightgbm", "xgboost",
+    "ridge", "rf_reg", "gb_reg", "lgbm_reg", "xgb_reg",
 ]
 
 
@@ -773,8 +773,37 @@ def adaptive_cold_start(
         models = []
         for _, rec in sorted_pairs:
             m = rec.metadata.get("best_model")
-            if m and m not in models:
-                models.append(m)
+            if m:
+                # Map model name to the current problem_type
+                if problem_type == "regression":
+                    if m in ["logistic", "linear"]: m = "ridge"
+                    elif m == "rf": m = "rf_reg"
+                    elif m == "gb": m = "gb_reg"
+                    elif m in ["lgbm_clf", "lightgbm"]: m = "lgbm_reg"
+                    elif m in ["xgb_clf", "xgboost"]: m = "xgb_reg"
+                    elif m == "et_clf": m = "et_reg"
+                    elif m == "knn_clf": m = "knn_reg"
+                    elif m == "svc": m = "svr"
+                    elif m == "dt_clf": m = "dt_reg"
+                    elif m == "mlp_clf": m = "mlp_reg"
+                    elif m == "ada_clf": m = "ada_reg"
+                    elif m == "bag_clf": m = "bag_reg"
+                else:
+                    if m in ["ridge", "linear"]: m = "logistic"
+                    elif m == "rf_reg": m = "rf"
+                    elif m == "gb_reg": m = "gb"
+                    elif m in ["lgbm_reg", "lightgbm"]: m = "lgbm_clf"
+                    elif m in ["xgb_reg", "xgboost"]: m = "xgb_clf"
+                    elif m == "et_reg": m = "et_clf"
+                    elif m == "knn_reg": m = "knn_clf"
+                    elif m == "svr": m = "svc"
+                    elif m == "dt_reg": m = "dt_clf"
+                    elif m == "mlp_reg": m = "mlp_clf"
+                    elif m == "ada_reg": m = "ada_clf"
+                    elif m == "bag_reg": m = "bag_clf"
+                
+                if m not in models:
+                    models.append(m)
             if len(models) >= config.memory_models_count:
                 break
         if not models:

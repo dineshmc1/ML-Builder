@@ -218,7 +218,7 @@ def build_memory(train_ids, store=None):
             "score": best_score,
             "time": elapsed
         }
-        store.add(f"openml_{did}", vec, [best_model_name], metadata)
+        store.add(str(did), vec, [best_model_name], metadata)
         print(f"  -> Successfully committed to memory: Best Model='{best_model_name}' (Score: {best_score:.4f})")
     
     print("\n[Memory Builder] Initializing FAISS Index...")
@@ -518,6 +518,7 @@ def main():
 
     successful_tests = 0
     failed_tests = 0
+    first_test_dataset = True
     
     for did in test_ids:
         print(f"\n[Test] Evaluating Dataset {did}...")
@@ -548,8 +549,9 @@ def main():
             print(f"  [Embedding] Min:  {query_vec.min():.4f}")
             print(f"  [Embedding] Max:  {query_vec.max():.4f}")
 
-        if RUN_WEIGHT_SENSITIVITY:
+        if RUN_WEIGHT_SENSITIVITY and first_test_dataset:
             run_weight_sensitivity_test(query_vec, store, problem_type)
+            first_test_dataset = False
 
         # Extract meta_features dict from X and y
         meta_features = extract_meta_features(X, y)
