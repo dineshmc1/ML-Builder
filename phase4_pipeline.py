@@ -202,8 +202,16 @@ def build_memory(train_ids, store=None):
                 print("  -> Training failed. Skipping.")
                 continue
                 
-            best_model_name = max(scores, key=scores.get)
-            best_score = scores[best_model_name]
+            from multi_objective import select_best_model_multiobjective
+            
+            best_model_by_score = max(scores, key=lambda k: scores[k]['score'])
+            best_model_by_utility, utility_scores = select_best_model_multiobjective(scores)
+
+            best_model_name = best_model_by_utility
+            best_score = scores[best_model_name]['score']
+            
+            if best_model_by_score != best_model_by_utility:
+                print(f"  [Multi-Obj] Score winner: {best_model_by_score} ({scores[best_model_by_score]['score']:.4f}) vs Utility winner: {best_model_by_utility} (utility={utility_scores[best_model_by_utility]:.4f})")
             
         except Exception as e:
             print(f"  -> Error during training/embedding: {e}")
@@ -519,6 +527,7 @@ def main():
     successful_tests = 0
     failed_tests = 0
     first_test_dataset = True
+    first_test_multi = True
     
     for did in test_ids:
         print(f"\n[Test] Evaluating Dataset {did}...")
@@ -595,7 +604,32 @@ def main():
                 sample_frac=1.0, cv=3, random_state=42
             )
             if cs_scores:
-                cs_score = cs_scores[max(cs_scores, key=cs_scores.get)]
+                from multi_objective import select_best_model_multiobjective, MODEL_COMPLEXITY
+                
+                best_model_by_score = max(cs_scores, key=lambda k: cs_scores[k]['score'])
+                best_model_by_utility, utility_scores = select_best_model_multiobjective(cs_scores)
+                cs_score = cs_scores[best_model_by_utility]['score']
+                
+                if best_model_by_score != best_model_by_utility:
+                    print(f"  [Multi-Obj] CS Score winner: {best_model_by_score} vs Utility winner: {best_model_by_utility}")
+                
+                # Log to W&B
+                for name, u_score in utility_scores.items():
+                    log({
+                        f"multiobjective/cs/{name}/score": cs_scores[name]['score'],
+                        f"multiobjective/cs/{name}/fit_time": cs_scores[name]['time'],
+                        f"multiobjective/cs/{name}/complexity": MODEL_COMPLEXITY.get(name, 3),
+                        f"multiobjective/cs/{name}/utility": u_score,
+                    })
+
+                log({
+                    "multiobjective/cs/best_by_score": best_model_by_score,
+                    "multiobjective/cs/best_by_utility": best_model_by_utility,
+                    "multiobjective/cs/selection_changed": best_model_by_score != best_model_by_utility,
+                    "multiobjective/cs/w1_accuracy": 0.6,
+                    "multiobjective/cs/w2_speed": 0.3,
+                    "multiobjective/cs/w3_simplicity": 0.1,
+                })
         except Exception as e:
             print(f"  [Cold-Start Score] Failed: {e}")
 
@@ -609,7 +643,32 @@ def main():
                 sample_frac=1.0, cv=3, random_state=42
             )
             if all_scores:
-                full_score = all_scores[max(all_scores, key=all_scores.get)]
+                from multi_objective import select_best_model_multiobjective, MODEL_COMPLEXITY
+                
+                best_model_by_score = max(all_scores, key=lambda k: all_scores[k]['score'])
+                best_model_by_utility, utility_scores = select_best_model_multiobjective(all_scores)
+                full_score = all_scores[best_model_by_utility]['score']
+                
+                if best_model_by_score != best_model_by_utility:
+                    print(f"  [Multi-Obj] Full Score winner: {best_model_by_score} vs Utility winner: {best_model_by_utility}")
+                
+                # Log to W&B
+                for name, u_score in utility_scores.items():
+                    log({
+                        f"multiobjective/full/{name}/score": all_scores[name]['score'],
+                        f"multiobjective/full/{name}/fit_time": all_scores[name]['time'],
+                        f"multiobjective/full/{name}/complexity": MODEL_COMPLEXITY.get(name, 3),
+                        f"multiobjective/full/{name}/utility": u_score,
+                    })
+
+                log({
+                    "multiobjective/full/best_by_score": best_model_by_score,
+                    "multiobjective/full/best_by_utility": best_model_by_utility,
+                    "multiobjective/full/selection_changed": best_model_by_score != best_model_by_utility,
+                    "multiobjective/full/w1_accuracy": 0.6,
+                    "multiobjective/full/w2_speed": 0.3,
+                    "multiobjective/full/w3_simplicity": 0.1,
+                })
         except Exception as e:
             print(f"  [Full Benchmark] Failed: {e}")
 
@@ -620,6 +679,23 @@ def main():
         print(f"  Full Train Score : {full_score:.4f} ({full_model_count} models tried)")
         print(f"  Score Gap        : {score_gap:+.4f}")
         print(f"  Models Saved     : {models_saved}")
+
+        if first_test_multi and 'all_scores' in locals() and all_scores:
+            weight_configs = [
+                (1.0, 0.0, 0.0),   # pure accuracy (baseline)
+                (0.6, 0.3, 0.1),   # default multi-objective
+                (0.5, 0.4, 0.1),   # speed-heavy
+                (0.7, 0.2, 0.1),   # accuracy-heavy
+                (0.6, 0.2, 0.2),   # simplicity-aware
+            ]
+
+            print(f"\n{'W1':>6} {'W2':>6} {'W3':>6} | {'Best Model':<15} {'Utility':>8}")
+            print("-" * 50)
+            from multi_objective import select_best_model_multiobjective
+            for w1, w2, w3 in weight_configs:
+                best, u_scores = select_best_model_multiobjective(all_scores, w1, w2, w3)
+                print(f"{w1:>6.1f} {w2:>6.1f} {w3:>6.1f} | {best:<15} {all_scores[best]['score']:>8.4f}")
+            first_test_multi = False
 
         # Accumulate
         if full_score > 0.0 and cs_score > 0.0:

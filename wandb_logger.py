@@ -8,6 +8,7 @@ def init_run(run_name: str, config: dict):
     if not USE_WANDB:
         return
     import wandb
+    os.environ["WANDB_SILENT"] = "true"
     _run = wandb.init(
         project=WANDB_PROJECT,
         entity=WANDB_ENTITY,

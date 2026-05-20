@@ -144,6 +144,8 @@ def _train_and_evaluate(
             splits = list(KFold(n_splits=cv_val, shuffle=True, random_state=42).split(X, y))
             
     best_pipe = None
+    cv_scores = []
+    fold_times = []
     
     print(f"  [Trainer] Commencing training loop for '{name}'...")
     for fold, (train_idx, val_idx) in enumerate(splits):
@@ -178,8 +180,9 @@ def _train_and_evaluate(
                 fit_kwargs["verbose"] = 10
                 
         est = clone(estimator)
-        print(f"    Fold {fold+1}/{len(splits)} - fitting model...")
+        start_fold = time.time()
         est.fit(X_tr_prep, y_tr, **fit_kwargs)
+        fold_times.append(time.time() - start_fold)
         
         y_pred = est.predict(X_va_prep)
         if is_classification:
@@ -192,9 +195,10 @@ def _train_and_evaluate(
             best_pipe = Pipeline([("preprocessor", prep), ("model", est)])
             
     if not cv_scores:
-        return -float('inf'), None
+        return -float('inf'), None, 0.0
         
     mean_score = float(np.mean(cv_scores))
+    avg_fit_time = sum(fold_times) / len(fold_times) if fold_times else 0.0
     
     if cv_val > 1 and refit_full:
         print(f"  [Trainer] Refitting {name} on ALL data...")
@@ -204,7 +208,7 @@ def _train_and_evaluate(
         est.fit(X_prep, y)
         best_pipe = Pipeline([("preprocessor", prep), ("model", est)])
         
-    return mean_score, best_pipe
+    return mean_score, best_pipe, avg_fit_time
 
 
 # Baseline screening
@@ -219,7 +223,7 @@ def baseline_screen(
     cv: int = 5,
     random_state: int = 42,
     max_time_seconds: Optional[float] = None,
-) -> Tuple[Dict[str, Any], Dict[str, float]]:
+) -> Tuple[Dict[str, Any], Dict[str, dict]]:
     # Quick evaluation of all candidate models on a data subsample.
     
     rng = np.random.RandomState(random_state)
@@ -228,7 +232,7 @@ def baseline_screen(
     X_sub = X.iloc[idx] if hasattr(X, "iloc") else X[idx]
     y_sub = y.iloc[idx] if hasattr(y, "iloc") else y[idx]
 
-    scores: Dict[str, float] = {}
+    scores: Dict[str, dict] = {}
     start = time.time()
 
     print(f"\n[Baseline] Screening on {len(X_sub)} samples ({sample_frac:.0%} subsample)…")
@@ -237,18 +241,18 @@ def baseline_screen(
             print(f"[Baseline] Time budget exhausted – skipping '{name}'.")
             break
 
-        mean_score, _ = _train_and_evaluate(
+        mean_score, _, avg_fit_time = _train_and_evaluate(
             name, estimator, preprocessor, X_sub, y_sub, problem_type, cv, start, max_time_seconds, refit_full=False
         )
         if mean_score > -float('inf'):
-            scores[name] = mean_score
-            print(f"  {name:>12s}  baseline score = {mean_score:.4f}")
+            scores[name] = {'score': mean_score, 'time': avg_fit_time}
+            print(f"  {name:>12s}  baseline score = {mean_score:.4f}, time = {avg_fit_time:.3f}s")
 
     if not scores:
         return models, scores
 
-    best_score = max(scores.values())
-    worst_score = min(scores.values())
+    best_score = max(v['score'] for v in scores.values())
+    worst_score = min(v['score'] for v in scores.values())
     score_range = best_score - worst_score
 
     if score_range == 0:
@@ -258,8 +262,8 @@ def baseline_screen(
 
     promising = {
         name: models[name]
-        for name, sc in scores.items()
-        if sc >= threshold
+        for name, res in scores.items()
+        if res['score'] >= threshold
     }
     dropped = set(scores) - set(promising)
     if dropped:
@@ -290,7 +294,7 @@ def full_train(
             print(f"[FullTrain] Time budget exhausted – skipping '{name}'.")
             break
 
-        mean_score, pipe = _train_and_evaluate(
+        mean_score, pipe, _ = _train_and_evaluate(
             name, estimator, preprocessor, X, y, problem_type, cv, start, max_time_seconds, refit_full=True
         )
         if pipe is not None and mean_score > -float('inf'):
