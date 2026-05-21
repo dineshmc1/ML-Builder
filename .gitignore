@@ -15,3 +15,5 @@ online_casino.csv
 *.html
 *.png
 .env
+*.log
+wandb/

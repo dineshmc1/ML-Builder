@@ -17,3 +17,7 @@ config: {'n_train_datasets': 130, 'n_test_datasets': 33, 'memory_index_path': 'm
 2026-05-21 03:28:04,005 INFO    MainThread:16664 [wandb_run.py:_redirect():2428] Wrapping output streams.
 2026-05-21 03:28:04,005 INFO    MainThread:16664 [wandb_run.py:_redirect():2451] Redirects installed.
 2026-05-21 03:28:04,014 INFO    MainThread:16664 [wandb_init.py:init():1095] run started, returning control to user process
+2026-05-21 04:03:54,759 INFO    MainThread:16664 [wandb_run.py:_finish():2271] finishing run rdineshmc14-utem/automl-meta-learning/0dk5x6xk
+2026-05-21 04:03:54,760 INFO    MainThread:16664 [wandb_run.py:_atexit_cleanup():2476] got exitcode: 0
+2026-05-21 04:03:54,760 INFO    MainThread:16664 [wandb_run.py:_restore():2458] restore
+2026-05-21 04:03:54,760 INFO    MainThread:16664 [wandb_run.py:_restore():2464] restore done

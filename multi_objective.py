@@ -39,6 +39,11 @@ def compute_utility(model_names, scores, times, complexities,
     t_min, t_max = min(times), max(times)
     norm_speed = [1 - (t - t_min) / (t_max - t_min + 1e-9) 
                   for t in times]
+    # Cap speed penalty to prevent extreme cases
+    norm_speed = [min(s, 0.5) for s in norm_speed]
+    max_s = max(norm_speed)
+    if max_s > 0:
+        norm_speed = [s / max_s for s in norm_speed]
 
     # Normalize simplicity (lower complexity = better, so invert)
     c_min, c_max = min(complexities), max(complexities)

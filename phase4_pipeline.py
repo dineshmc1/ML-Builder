@@ -204,8 +204,13 @@ def build_memory(train_ids, store=None):
                 
             from multi_objective import select_best_model_multiobjective
             
+            if problem_type == 'regression':
+                w1_def, w2_def, w3_def = 0.8, 0.15, 0.05
+            else:
+                w1_def, w2_def, w3_def = 0.6, 0.3, 0.1
+                
             best_model_by_score = max(scores, key=lambda k: scores[k]['score'])
-            best_model_by_utility, utility_scores = select_best_model_multiobjective(scores)
+            best_model_by_utility, utility_scores = select_best_model_multiobjective(scores, w1_def, w2_def, w3_def)
 
             best_model_name = best_model_by_utility
             best_score = scores[best_model_name]['score']
@@ -606,8 +611,13 @@ def main():
             if cs_scores:
                 from multi_objective import select_best_model_multiobjective, MODEL_COMPLEXITY
                 
+                if problem_type == 'regression':
+                    w1_def, w2_def, w3_def = 0.8, 0.15, 0.05
+                else:
+                    w1_def, w2_def, w3_def = 0.6, 0.3, 0.1
+                
                 best_model_by_score = max(cs_scores, key=lambda k: cs_scores[k]['score'])
-                best_model_by_utility, utility_scores = select_best_model_multiobjective(cs_scores)
+                best_model_by_utility, utility_scores = select_best_model_multiobjective(cs_scores, w1_def, w2_def, w3_def)
                 cs_score = cs_scores[best_model_by_utility]['score']
                 
                 if best_model_by_score != best_model_by_utility:
@@ -626,9 +636,9 @@ def main():
                     "multiobjective/cs/best_by_score": best_model_by_score,
                     "multiobjective/cs/best_by_utility": best_model_by_utility,
                     "multiobjective/cs/selection_changed": best_model_by_score != best_model_by_utility,
-                    "multiobjective/cs/w1_accuracy": 0.6,
-                    "multiobjective/cs/w2_speed": 0.3,
-                    "multiobjective/cs/w3_simplicity": 0.1,
+                    "multiobjective/cs/w1_accuracy": w1_def,
+                    "multiobjective/cs/w2_speed": w2_def,
+                    "multiobjective/cs/w3_simplicity": w3_def,
                 })
         except Exception as e:
             print(f"  [Cold-Start Score] Failed: {e}")
@@ -645,8 +655,13 @@ def main():
             if all_scores:
                 from multi_objective import select_best_model_multiobjective, MODEL_COMPLEXITY
                 
+                if problem_type == 'regression':
+                    w1_def, w2_def, w3_def = 0.8, 0.15, 0.05
+                else:
+                    w1_def, w2_def, w3_def = 0.6, 0.3, 0.1
+                
                 best_model_by_score = max(all_scores, key=lambda k: all_scores[k]['score'])
-                best_model_by_utility, utility_scores = select_best_model_multiobjective(all_scores)
+                best_model_by_utility, utility_scores = select_best_model_multiobjective(all_scores, w1_def, w2_def, w3_def)
                 full_score = all_scores[best_model_by_utility]['score']
                 
                 if best_model_by_score != best_model_by_utility:
@@ -665,9 +680,9 @@ def main():
                     "multiobjective/full/best_by_score": best_model_by_score,
                     "multiobjective/full/best_by_utility": best_model_by_utility,
                     "multiobjective/full/selection_changed": best_model_by_score != best_model_by_utility,
-                    "multiobjective/full/w1_accuracy": 0.6,
-                    "multiobjective/full/w2_speed": 0.3,
-                    "multiobjective/full/w3_simplicity": 0.1,
+                    "multiobjective/full/w1_accuracy": w1_def,
+                    "multiobjective/full/w2_speed": w2_def,
+                    "multiobjective/full/w3_simplicity": w3_def,
                 })
         except Exception as e:
             print(f"  [Full Benchmark] Failed: {e}")
@@ -680,9 +695,10 @@ def main():
         print(f"  Score Gap        : {score_gap:+.4f}")
         print(f"  Models Saved     : {models_saved}")
 
-        if first_test_multi and 'all_scores' in locals() and all_scores:
+        if 'all_scores' in locals() and all_scores:
             weight_configs = [
                 (1.0, 0.0, 0.0),   # pure accuracy (baseline)
+                (0.8, 0.15, 0.05), # regression-default
                 (0.6, 0.3, 0.1),   # default multi-objective
                 (0.5, 0.4, 0.1),   # speed-heavy
                 (0.7, 0.2, 0.1),   # accuracy-heavy
@@ -694,8 +710,7 @@ def main():
             from multi_objective import select_best_model_multiobjective
             for w1, w2, w3 in weight_configs:
                 best, u_scores = select_best_model_multiobjective(all_scores, w1, w2, w3)
-                print(f"{w1:>6.1f} {w2:>6.1f} {w3:>6.1f} | {best:<15} {all_scores[best]['score']:>8.4f}")
-            first_test_multi = False
+                print(f"{w1:>6.1f} {w2:>6.1f} {w3:>6.1f} | {best:<15} {u_scores[best]:>8.4f}")
 
         # Accumulate
         if full_score > 0.0 and cs_score > 0.0:
