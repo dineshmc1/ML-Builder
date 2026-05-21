@@ -98,3 +98,15 @@ C:\Dinesh\AutoML\ML-Builder\.venv\Lib\site-packages\sklearn\datasets\_openml.py:
 
 [Memory Builder] Processing Dataset 65
   -> Fetching OpenML ID: 65...
+  -> Failed to load dataset 65: Dataset with data_id 65 not found.
+
+[Memory Builder] Processing Dataset 45
+  -> Fetching OpenML ID: 45...
+  -> Failed to load dataset 45: Dataset with data_id 45 not found.
+
+[Memory Builder] Processing Dataset 27
+  -> Fetching OpenML ID: 27...
+  -> Failed to load dataset 27: Categorical categories must be unique
+
+[Memory Builder] Processing Dataset 42705
+  -> Fetching OpenML ID: 42705...
