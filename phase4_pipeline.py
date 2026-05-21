@@ -210,7 +210,7 @@ def build_memory(train_ids, store=None):
                 w1_def, w2_def, w3_def = 0.6, 0.3, 0.1
                 
             best_model_by_score = max(scores, key=lambda k: scores[k]['score'])
-            best_model_by_utility, utility_scores = select_best_model_multiobjective(scores, w1_def, w2_def, w3_def)
+            best_model_by_utility, utility_scores = select_best_model_multiobjective(scores, task_type=problem_type, w1=w1_def, w2=w2_def, w3=w3_def)
 
             best_model_name = best_model_by_utility
             best_score = scores[best_model_name]['score']
@@ -617,7 +617,7 @@ def main():
                     w1_def, w2_def, w3_def = 0.6, 0.3, 0.1
                 
                 best_model_by_score = max(cs_scores, key=lambda k: cs_scores[k]['score'])
-                best_model_by_utility, utility_scores = select_best_model_multiobjective(cs_scores, w1_def, w2_def, w3_def)
+                best_model_by_utility, utility_scores = select_best_model_multiobjective(cs_scores, task_type=problem_type, w1=w1_def, w2=w2_def, w3=w3_def)
                 cs_score = cs_scores[best_model_by_utility]['score']
                 
                 if best_model_by_score != best_model_by_utility:
@@ -661,7 +661,7 @@ def main():
                     w1_def, w2_def, w3_def = 0.6, 0.3, 0.1
                 
                 best_model_by_score = max(all_scores, key=lambda k: all_scores[k]['score'])
-                best_model_by_utility, utility_scores = select_best_model_multiobjective(all_scores, w1_def, w2_def, w3_def)
+                best_model_by_utility, utility_scores = select_best_model_multiobjective(all_scores, task_type=problem_type, w1=w1_def, w2=w2_def, w3=w3_def)
                 full_score = all_scores[best_model_by_utility]['score']
                 
                 if best_model_by_score != best_model_by_utility:
@@ -709,8 +709,8 @@ def main():
             print("-" * 50)
             from multi_objective import select_best_model_multiobjective
             for w1, w2, w3 in weight_configs:
-                best, u_scores = select_best_model_multiobjective(all_scores, w1, w2, w3)
-                print(f"{w1:>6.1f} {w2:>6.1f} {w3:>6.1f} | {best:<15} {u_scores[best]:>8.4f}")
+                best, u_scores = select_best_model_multiobjective(all_scores, task_type=problem_type, w1=w1, w2=w2, w3=w3)
+                print(f"{w1:>6.1f} {w2:>6.1f} {w3:>6.1f} | {best:<15} {u_scores.get(best, 0):>8.4f}")
 
         # Accumulate
         if full_score > 0.0 and cs_score > 0.0:

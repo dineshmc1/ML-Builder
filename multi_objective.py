@@ -59,17 +59,44 @@ def compute_utility(model_names, scores, times, complexities,
     return utility
 
 
-def select_best_model_multiobjective(model_results, w1=0.6, w2=0.3, w3=0.1):
+def select_best_model_multiobjective(model_results, task_type='classification',
+                                      w1=None, w2=None, w3=None,
+                                      max_score_drop=0.05):
     """
     model_results: dict of {model_name: {'score': float, 'time': float}}
     Returns: (best_model_name, utility_scores_dict)
     """
+    # Set task-aware defaults
+    if w1 is None:
+        w1, w2, w3 = (0.6, 0.3, 0.1) if task_type == 'classification' \
+                     else (0.8, 0.15, 0.05)
+                     
     names = list(model_results.keys())
     scores = [model_results[n]['score'] for n in names]
-    times = [model_results[n]['time'] for n in names]
-    complexities = [MODEL_COMPLEXITY.get(n, 3) for n in names]
+    
+    # Find best score
+    best_score = max(scores)
+    
+    # Filter candidates: only models within max_score_drop of best
+    if task_type == 'regression':
+        # scores are negative, best is closest to 0
+        threshold = best_score * (1 + max_score_drop)  
+        eligible = {n: model_results[n] for n, s in zip(names, scores)
+                    if s >= threshold}
+    else:
+        threshold = best_score * (1 - max_score_drop)
+        eligible = {n: model_results[n] for n, s in zip(names, scores)
+                    if s >= threshold}
+                    
+    if not eligible:
+        eligible = model_results
+        
+    e_names = list(eligible.keys())
+    e_scores = [eligible[n]['score'] for n in e_names]
+    e_times = [eligible[n]['time'] for n in e_names]
+    e_complexities = [MODEL_COMPLEXITY.get(n, 3) for n in e_names]
 
-    utility = compute_utility(names, scores, times, 
-                               complexities, w1, w2, w3)
+    utility = compute_utility(e_names, e_scores, e_times, 
+                               e_complexities, w1, w2, w3)
     best = max(utility, key=utility.get)
     return best, utility
