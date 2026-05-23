@@ -107,6 +107,18 @@ def get_models(
     return selected
 
 
+def create_model(model_name: str, params: Optional[Dict[str, Any]] = None) -> Any:
+    """Create an un-fitted instance of a model by its name, with optional custom parameters."""
+    catalogue = CLASSIFICATION_MODELS if model_name in CLASSIFICATION_MODELS else REGRESSION_MODELS
+    if model_name not in catalogue:
+        raise ValueError(f"Unknown model name: {model_name}")
+    
+    model = clone(catalogue[model_name])
+    if params:
+        model.set_params(**params)
+    return model
+
+
 # Helper for training with custom CV and early stopping
 def _train_and_evaluate(
     name: str,

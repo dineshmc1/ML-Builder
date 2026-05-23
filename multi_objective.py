@@ -58,6 +58,26 @@ def compute_utility(model_names, scores, times, complexities,
                          w3 * norm_simplicity[i])
     return utility
 
+def calculate_utility_absolute(score, time_s, complexity, w1, w2, w3, task_type='classification'):
+    """
+    Absolute utility calculation for a single HPO trial, without batch normalization.
+    """
+    # Speed penalty: normalize time 0 to 10s
+    speed_penalty = min(time_s / 10.0, 1.0)
+    # Simplicity penalty: normalize complexity 1-4 to 0-1
+    comp_penalty = (complexity - 1) / 3.0
+    
+    if task_type == 'classification':
+        return w1 * score - w2 * speed_penalty - w3 * comp_penalty
+    else:
+        # Regression score is negative MSE. We want to maximize it.
+        # Add a minor relative penalty for speed/complexity to prevent scale mismatch.
+        penalty_factor = 1.0 + (w2 * speed_penalty) + (w3 * comp_penalty)
+        if score < 0:
+            return score * penalty_factor
+        else:
+            return score / penalty_factor
+
 
 def select_best_model_multiobjective(model_results, task_type='classification',
                                       w1=None, w2=None, w3=None,

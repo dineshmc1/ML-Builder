@@ -95,7 +95,7 @@ def load_and_preprocess_openml(dataset_id):
                 return val
             return re.sub(r'[\[\]\{\}"\':,<>]', '', str(val))
             
-        for col in X.select_dtypes(include=['object', 'category']).columns:
+        for col in X.select_dtypes(include=['object', 'category', 'string']).columns:
             if str(X[col].dtype) == 'category':
                 new_categories = [clean_json_chars(c) for c in X[col].cat.categories]
                 X[col] = X[col].cat.rename_categories(new_categories)
@@ -224,12 +224,17 @@ def build_memory(train_ids, store=None):
             
         elapsed = time.time() - start_time
         
+        from model_trainer import REGRESSION_MODELS, CLASSIFICATION_MODELS
+        cat = REGRESSION_MODELS if problem_type == 'regression' else CLASSIFICATION_MODELS
+        hparams = cat[best_model_name].get_params()
+        
         # Store in FAISS memory mapping using MemoryStore
         metadata = {
             "dataset_id": did,
             "problem_type": problem_type,
             "score": best_score,
-            "time": elapsed
+            "time": elapsed,
+            "hparams": {best_model_name: hparams}
         }
         store.add(str(did), vec, [best_model_name], metadata)
         print(f"  -> Successfully committed to memory: Best Model='{best_model_name}' (Score: {best_score:.4f})")
@@ -427,7 +432,7 @@ def main():
 
     train_limit = int(len(all_ids) * 0.8)
     train_ids = all_ids[:train_limit]
-    test_ids = all_ids[train_limit:]
+    test_ids = all_ids[train_limit:train_limit+3]  # Limit to 3 datasets for HPO testing
     
     print(f"Datasets mapped to Knowledge Base (Memory): {train_ids}")
     print(f"Unseen Datasets for Testing: {test_ids}")
@@ -640,8 +645,33 @@ def main():
                     "multiobjective/cs/w2_speed": w2_def,
                     "multiobjective/cs/w3_simplicity": w3_def,
                 })
+                
+                # --- Phase 5.3: HPO on Top 3 ---
+                top_models_hpo = sorted(utility_scores.keys(), key=lambda x: utility_scores[x], reverse=True)[:3]
+                
+                # Retrieve memory hparams from the nearest neighbor
+                memory_hparams = {}
+                if store._index is not None and len(store.records) > 0:
+                    dists, idxs = store._index.search(np.array([query_vec], dtype=np.float32), 1)
+                    if idxs[0][0] != -1:
+                        nn_record = store.records[idxs[0][0]]
+                        memory_hparams = nn_record.metadata.get("hparams", {})
+                        
+                from hpo_optuna import run_hpo
+                best_hpo_model, best_params = run_hpo(
+                    X, y, preprocessor_cs, top_models_hpo, memory_hparams, problem_type, str(did)
+                )
+                
+                if best_hpo_model:
+                    print(f"  [HPO] Winner: {best_hpo_model} with params {best_params}")
+                    # In a real run, we would re-train this model and overwrite cs_score.
+                    # For now, we just acknowledge the winner.
+                else:
+                    print(f"  [HPO] No HPO winner (all models skipped or failed).")
         except Exception as e:
-            print(f"  [Cold-Start Score] Failed: {e}")
+            import traceback
+            print(f"  [Cold-Start Score / HPO] Failed: {e}")
+            traceback.print_exc()
 
         # Full benchmark: train ALL models
         try:
