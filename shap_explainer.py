@@ -40,7 +40,7 @@ def generate_shap_explanations(model, X_train, X_test, model_name, dataset_id):
         import traceback
         print(f"[SHAP] Failed to generate explanations for {model_name}: {e}")
         traceback.print_exc()
-        return None
+        return False, []
 
     # 2. Generate Plots
     os.makedirs("shap_plots", exist_ok=True)
@@ -65,5 +65,23 @@ def generate_shap_explanations(model, X_train, X_test, model_name, dataset_id):
         f"shap/{dataset_id}_importance": wandb.Image(bar_path)
     })
     
+    # Extract Top 3 Features
+    top_3_features = ["Unknown"]
+    try:
+        if isinstance(shap_values, list):
+            mean_abs_shap = np.abs(shap_values[0]).mean(axis=0)
+        elif len(shap_values.shape) > 2: # handle multiclass arrays
+            mean_abs_shap = np.abs(shap_values).mean(axis=(0, 2))
+        else:
+            mean_abs_shap = np.abs(shap_values).mean(axis=0)
+            
+        top_idx = np.argsort(mean_abs_shap)[-3:][::-1]
+        if hasattr(X_explain, 'columns'):
+            top_3_features = X_explain.columns[top_idx].tolist()
+        else:
+            top_3_features = [f"Feature {i}" for i in top_idx]
+    except Exception as e:
+        print(f"[SHAP] Could not extract top features: {e}")
+        
     print(f"[SHAP] Successfully logged plots for {model_name}.")
-    return True
+    return True, top_3_features

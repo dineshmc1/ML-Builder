@@ -789,7 +789,7 @@ def main():
                 X_train_df = pd.DataFrame(dense_X, columns=feature_names)
                 X_test_df = X_train_df # using same data for simplicity in evaluation phase
                 
-                generate_shap_explanations(
+                success, top_3_shap_features = generate_shap_explanations(
                     model=final_model_instance, 
                     X_train=X_train_df, 
                     X_test=X_test_df, 
@@ -800,6 +800,52 @@ def main():
                 import traceback
                 print(f"  [SHAP] Failed: {e}")
                 traceback.print_exc()
+
+        # Phase 5.6: LLM Explainability Report
+        try:
+            from dataset_profiler import profile_dataset
+            from llm_explainer import generate_comprehensive_report
+            
+            top_features = top_3_shap_features if 'top_3_shap_features' in locals() else []
+            
+            master_context = {
+                "dataset_profile": profile_dataset(did, X, y, problem_type),
+                "routing": {
+                    "decision": decision,
+                    "similarity_score": round(float(c_sim), 4) if 'c_sim' in locals() else 0.0,
+                    "consistency_score": round(float(c_cons), 4) if 'c_cons' in locals() else 0.0,
+                    "agreement_score": round(float(c_agree), 4) if 'c_agree' in locals() else 0.0
+                },
+                "training_and_hpo": {
+                    "models_screened": full_model_count,
+                    "models_dropped": list(set([n for n in all_scores.keys()]) - set(selected_models)) if 'all_scores' in locals() else [],
+                    "final_model": full_search_best_model_name,
+                    "hpo_trials_run": 10,
+                    "best_hpo_params": best_params if 'best_params' in locals() else {},
+                    "cold_start_score": round(float(cs_score), 4),
+                    "full_train_score": round(float(full_score), 4)
+                },
+                "multi_objective": {
+                    "weights_used": [w1_def, w2_def, w3_def] if 'w1_def' in locals() else [],
+                    "final_utility_score": round(float(final_winning_utility_score), 4),
+                    "accuracy_component": "Included in final_utility_score",
+                    "speed_component": "Included in final_utility_score",
+                    "complexity_component": "Included in final_utility_score"
+                },
+                "confidence_and_calibration": {
+                    "confidence_score_C(D)": round(float(0.6*c_sim + 0.2*c_cons + 0.2*c_agree), 4) if 'c_sim' in locals() else 0.0,
+                    "expected_calibration_error_ECE": "Evaluated globally post-run"
+                },
+                "shap_interpretability": {
+                    "top_3_features": top_features,
+                    "model_type": "Tree-based" if full_search_best_model_name in ['rf', 'gb', 'xgb_clf', 'xgb_reg', 'lgbm_clf', 'lgbm_reg', 'et_clf', 'et_reg'] else "Linear/Black-box"
+                }
+            }
+            generate_comprehensive_report(master_context, str(did))
+        except Exception as e:
+            import traceback
+            print(f"  [Phase 5.6 Report] Failed: {e}")
+            traceback.print_exc()
 
         # Accumulate
         if full_score > 0.0 and cs_score > 0.0:
