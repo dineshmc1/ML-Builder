@@ -114,8 +114,8 @@ def load_and_preprocess_openml(dataset_id):
         if y.isna().any():
             y.fillna(method='ffill', inplace=True)
             
-        # Clean X to handle missing values
-        X = clean(X, verbose=False)
+        # Clean X to handle missing values and keep y in sync
+        X, y = clean(X, y=y, verbose=False)
             
         # Detect problem type early and apply categorical encoding if needed
         problem_type = detect_problem_type(y)
@@ -432,7 +432,7 @@ def main():
 
     train_limit = int(len(all_ids) * 0.8)
     train_ids = all_ids[:train_limit]
-    test_ids = all_ids[train_limit:train_limit+3]  # Limit to 3 datasets for HPO testing
+    test_ids = all_ids[train_limit:train_limit+3]  # Limit to 3 test datasets for SHAP testing
     
     print(f"Datasets mapped to Knowledge Base (Memory): {train_ids}")
     print(f"Unseen Datasets for Testing: {test_ids}")
@@ -604,6 +604,9 @@ def main():
         cs_score = 0.0
         full_score = 0.0
         full_model_count = 0
+        cold_start_best_model_name = "NONE"
+        full_search_best_model_name = "NONE"
+        final_winning_utility_score = 0.0
 
         # Cold-start: train only selected models
         try:
@@ -624,6 +627,7 @@ def main():
                 best_model_by_score = max(cs_scores, key=lambda k: cs_scores[k]['score'])
                 best_model_by_utility, utility_scores = select_best_model_multiobjective(cs_scores, task_type=problem_type, w1=w1_def, w2=w2_def, w3=w3_def)
                 cs_score = cs_scores[best_model_by_utility]['score']
+                cold_start_best_model_name = best_model_by_utility
                 
                 if best_model_by_score != best_model_by_utility:
                     print(f"  [Multi-Obj] CS Score winner: {best_model_by_score} vs Utility winner: {best_model_by_utility}")
@@ -693,6 +697,8 @@ def main():
                 best_model_by_score = max(all_scores, key=lambda k: all_scores[k]['score'])
                 best_model_by_utility, utility_scores = select_best_model_multiobjective(all_scores, task_type=problem_type, w1=w1_def, w2=w2_def, w3=w3_def)
                 full_score = all_scores[best_model_by_utility]['score']
+                full_search_best_model_name = best_model_by_utility
+                final_winning_utility_score = utility_scores[best_model_by_utility]
                 
                 if best_model_by_score != best_model_by_utility:
                     print(f"  [Multi-Obj] Full Score winner: {best_model_by_score} vs Utility winner: {best_model_by_utility}")
@@ -725,22 +731,75 @@ def main():
         print(f"  Score Gap        : {score_gap:+.4f}")
         print(f"  Models Saved     : {models_saved}")
 
-        if 'all_scores' in locals() and all_scores:
-            weight_configs = [
-                (1.0, 0.0, 0.0),   # pure accuracy (baseline)
-                (0.8, 0.15, 0.05), # regression-default
-                (0.6, 0.3, 0.1),   # default multi-objective
-                (0.5, 0.4, 0.1),   # speed-heavy
-                (0.7, 0.2, 0.1),   # accuracy-heavy
-                (0.6, 0.2, 0.2),   # simplicity-aware
-            ]
+        # Phase 5.4: Confidence Calibration Logging
+        import csv
+        import os
+        
+        csv_file = "confidence_data.csv"
+        if not os.path.exists(csv_file):
+            with open(csv_file, mode='w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow(["dataset_id", "c_sim", "c_cons", "c_agree", "actual_utility"])
+        
+        # 1. Similarity
+        c_sim = similarity if 'similarity' in locals() else 0.0
+        
+        # 2. Consistency
+        c_cons = 0.5
+        if store._index is not None and len(store.records) > 0:
+            dists, idxs = store._index.search(np.array([query_vec], dtype=np.float32), 5)
+            neighbor_scores = []
+            for idx in idxs[0]:
+                if idx != -1:
+                    neighbor_scores.append(store.records[idx].metadata.get('score', 0.0))
+            if len(neighbor_scores) > 1:
+                c_cons = 1.0 / (1.0 + np.var(neighbor_scores) * 10)
+        
+        # 3. Agreement
+        c_agree = 1.0 if cold_start_best_model_name == full_search_best_model_name else 0.0
+        
+        # 4. Actual Utility
+        actual_utility = final_winning_utility_score
+        
+        # Save to CSV
+        with open(csv_file, mode='a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([did, c_sim, c_cons, c_agree, actual_utility])
 
-            print(f"\n{'W1':>6} {'W2':>6} {'W3':>6} | {'Best Model':<15} {'Utility':>8}")
-            print("-" * 50)
-            from multi_objective import select_best_model_multiobjective
-            for w1, w2, w3 in weight_configs:
-                best, u_scores = select_best_model_multiobjective(all_scores, task_type=problem_type, w1=w1, w2=w2, w3=w3)
-                print(f"{w1:>6.1f} {w2:>6.1f} {w3:>6.1f} | {best:<15} {u_scores.get(best, 0):>8.4f}")
+        # Phase 5.5: XAI SHAP Explanations
+        if full_search_best_model_name not in ["NONE", "FAILED"]:
+            from shap_explainer import generate_shap_explanations
+            import pandas as pd
+            print(f"  [SHAP] Training final model {full_search_best_model_name} for explanations...")
+            try:
+                final_model_instance = get_models(problem_type, [full_search_best_model_name])[full_search_best_model_name]
+                preprocessor_shap, _, _ = build_preprocessor(X)
+                X_prep_shap = preprocessor_shap.fit_transform(X, y)
+                final_model_instance.fit(X_prep_shap, y)
+                
+                # Get feature names after preprocessing if possible
+                try:
+                    feature_names = preprocessor_shap.get_feature_names_out()
+                except:
+                    feature_names = [f"feature_{i}" for i in range(X_prep_shap.shape[1])]
+                    
+                # Convert to dense array if sparse
+                dense_X = X_prep_shap.toarray() if hasattr(X_prep_shap, 'toarray') else X_prep_shap
+                
+                X_train_df = pd.DataFrame(dense_X, columns=feature_names)
+                X_test_df = X_train_df # using same data for simplicity in evaluation phase
+                
+                generate_shap_explanations(
+                    model=final_model_instance, 
+                    X_train=X_train_df, 
+                    X_test=X_test_df, 
+                    model_name=full_search_best_model_name, 
+                    dataset_id=str(did)
+                )
+            except Exception as e:
+                import traceback
+                print(f"  [SHAP] Failed: {e}")
+                traceback.print_exc()
 
         # Accumulate
         if full_score > 0.0 and cs_score > 0.0:

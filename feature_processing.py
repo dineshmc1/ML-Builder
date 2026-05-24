@@ -38,6 +38,9 @@ def build_preprocessor(
 ) -> Tuple[ColumnTransformer, List[str], List[str]]:
     numeric_cols, categorical_cols = detect_column_types(X)
 
+    from sklearn.impute import SimpleImputer
+    from sklearn.pipeline import Pipeline
+    
     transformers = []
     if numeric_cols:
         if scaler_map:
@@ -46,16 +49,16 @@ def build_preprocessor(
             rob_cols = [c for c in numeric_cols
                         if scaler_map.get(c) == "robust"]
             if std_cols:
-                transformers.append(("num_std", StandardScaler(), std_cols))
+                transformers.append(("num_std", Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]), std_cols))
             if rob_cols:
-                transformers.append(("num_rob", RobustScaler(), rob_cols))
+                transformers.append(("num_rob", Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", RobustScaler())]), rob_cols))
             # Any leftover numeric cols not in the map → StandardScaler
             leftover = [c for c in numeric_cols
                         if c not in std_cols and c not in rob_cols]
             if leftover:
-                transformers.append(("num_other", StandardScaler(), leftover))
+                transformers.append(("num_other", Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]), leftover))
         else:
-            transformers.append(("num", StandardScaler(), numeric_cols))
+            transformers.append(("num", Pipeline([("imputer", SimpleImputer(strategy="median")), ("scaler", StandardScaler())]), numeric_cols))
 
     if categorical_cols:
         onehot_cols = [c for c in categorical_cols if not encoding_map or encoding_map.get(c, 'onehot') == 'onehot']
@@ -65,10 +68,10 @@ def build_preprocessor(
             transformers.append(
                 (
                     "cat_ohe",
-                    OneHotEncoder(
-                        handle_unknown="ignore",
-                        sparse_output=False,
-                    ),
+                    Pipeline([
+                        ("imputer", SimpleImputer(strategy="constant", fill_value="missing")),
+                        ("ohe", OneHotEncoder(handle_unknown="ignore", sparse_output=False))
+                    ]),
                     onehot_cols,
                 )
             )

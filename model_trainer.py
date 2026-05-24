@@ -11,6 +11,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
+import pandas as pd
 from sklearn.base import clone
 from sklearn.model_selection import cross_val_score
 from sklearn.pipeline import Pipeline
@@ -243,6 +244,10 @@ def baseline_screen(
     idx = rng.choice(len(X), size=min(n_sample, len(X)), replace=False)
     X_sub = X.iloc[idx] if hasattr(X, "iloc") else X[idx]
     y_sub = y.iloc[idx] if hasattr(y, "iloc") else y[idx]
+    
+    if problem_type == 'classification':
+        from sklearn.preprocessing import LabelEncoder
+        y_sub = pd.Series(LabelEncoder().fit_transform(y_sub), index=y_sub.index if hasattr(y_sub, "index") else None)
 
     scores: Dict[str, dict] = {}
     start = time.time()
