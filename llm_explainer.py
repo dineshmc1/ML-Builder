@@ -46,7 +46,7 @@ def generate_comprehensive_report(master_context, dataset_id):
             model=os.getenv("LLM_MODEL", LLM_MODEL), 
             messages=messages,
             temperature=0.4,
-            max_tokens=1500
+            max_tokens=2000
         )
         report_md = response.choices[0].message.content.strip()
     except Exception as e:
