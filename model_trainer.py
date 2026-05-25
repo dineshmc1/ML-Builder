@@ -141,6 +141,15 @@ def _train_and_evaluate(
     
     cv_scores = []
     is_classification = problem_type == "classification"
+    
+    if is_classification:
+        from sklearn.preprocessing import LabelEncoder
+        import pandas as pd
+        if hasattr(y, 'index'):
+            y = pd.Series(LabelEncoder().fit_transform(y), index=y.index)
+        else:
+            y = LabelEncoder().fit_transform(y)
+            
     cv_val = min(cv, len(X))
     
     if cv_val <= 1:
@@ -244,10 +253,6 @@ def baseline_screen(
     idx = rng.choice(len(X), size=min(n_sample, len(X)), replace=False)
     X_sub = X.iloc[idx] if hasattr(X, "iloc") else X[idx]
     y_sub = y.iloc[idx] if hasattr(y, "iloc") else y[idx]
-    
-    if problem_type == 'classification':
-        from sklearn.preprocessing import LabelEncoder
-        y_sub = pd.Series(LabelEncoder().fit_transform(y_sub), index=y_sub.index if hasattr(y_sub, "index") else None)
 
     scores: Dict[str, dict] = {}
     start = time.time()
