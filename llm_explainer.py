@@ -5,9 +5,14 @@ import wandb
 
 def generate_comprehensive_report(master_context, dataset_id):
     
-    system_prompt = """You are a Senior Data Science Consultant. You are presenting a comprehensive AutoML run report to a business stakeholder and a technical lead. 
-    Write a structured, professional Markdown report based on the provided JSON context. 
+    system_prompt = """You are an Expert AutoML System acting as a Data Science Consultant. 
+    Write a structured, professional Markdown report based EXACTLY on the provided JSON context. 
     Do not invent features or metrics that are not in the context. Use plain English for business concepts, but retain technical accuracy for the engineering team.
+
+    CRITICAL RULES:
+    1. You MUST output exactly 7 sections, numbered 1 to 7. Do not stop early.
+    2. DO NOT hallucinate or contradict the context (e.g., if a model is the winner, it was NOT dropped).
+    3. Base your SHAP hypotheses strictly on the feature names provided.
     
     Structure your report exactly with these headings:
     # 1. Executive Summary & Dataset Context
@@ -28,7 +33,7 @@ def generate_comprehensive_report(master_context, dataset_id):
     # 6. Confidence & System Calibration
     (Explain the Confidence Score C(D). Explain what the ECE (Expected Calibration Error) means for trusting this system's future predictions).
     
-    # 7. Search Efficiency & Transfer Learning (NEW)
+    # 7. Search Efficiency & Transfer Learning
     (Report and explain the Search Compression Ratio (SCR), showcasing how much faster the system is than brute-force. Report the Performance Retention (PR) to show how much accuracy was retained despite the reduced search space. Finally, present the Transfer Utility Score (TUS) as the ultimate composite metric that mathematically balances accuracy retention with compute savings.)
     """
 

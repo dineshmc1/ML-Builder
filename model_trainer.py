@@ -142,28 +142,31 @@ def _train_and_evaluate(
     cv_scores = []
     is_classification = problem_type == "classification"
     
-    if is_classification:
-        from sklearn.preprocessing import LabelEncoder
-        import pandas as pd
-        if hasattr(y, 'index'):
-            y = pd.Series(LabelEncoder().fit_transform(y), index=y.index)
-        else:
-            y = LabelEncoder().fit_transform(y)
+    # Removed redundant LabelEncoder here, doing it per-fold to handle missing classes in CV splits
             
     cv_val = min(cv, len(X))
     
     if cv_val <= 1:
         # Single validation split for large datasets (speed and early stopping)
-        try:
-            splits = [train_test_split(np.arange(len(X)), test_size=0.15, random_state=42, stratify=y if is_classification else None)]
-        except ValueError:
+        if is_classification:
+            unique, counts = np.unique(y, return_counts=True)
+            if counts.min() < 2:
+                splits = [train_test_split(np.arange(len(X)), test_size=0.15, random_state=42)]
+            else:
+                splits = [train_test_split(np.arange(len(X)), test_size=0.15, random_state=42, stratify=y)]
+        else:
             splits = [train_test_split(np.arange(len(X)), test_size=0.15, random_state=42)]
     else:
-        kf = StratifiedKFold(n_splits=cv_val, shuffle=True, random_state=42) if is_classification else KFold(n_splits=cv_val, shuffle=True, random_state=42)
-        try:
-            splits = list(kf.split(X, y))
-        except ValueError:
-            splits = list(KFold(n_splits=cv_val, shuffle=True, random_state=42).split(X, y))
+        if is_classification:
+            unique, counts = np.unique(y, return_counts=True)
+            if counts.min() < cv_val:
+                kf = KFold(n_splits=cv_val, shuffle=True, random_state=42)
+            else:
+                kf = StratifiedKFold(n_splits=cv_val, shuffle=True, random_state=42)
+        else:
+            kf = KFold(n_splits=cv_val, shuffle=True, random_state=42)
+            
+        splits = list(kf.split(X, y))
             
     best_pipe = None
     cv_scores = []
@@ -190,8 +193,24 @@ def _train_and_evaluate(
         X_va_prep = prep.transform(X_va)
         
         fit_kwargs = {}
+        if is_classification:
+            from sklearn.preprocessing import LabelEncoder
+            le_fold = LabelEncoder()
+            y_tr = le_fold.fit_transform(y_tr)
+            
         if name in ["lightgbm", "xgboost"]:
-            fit_kwargs["eval_set"] = [(X_va_prep, y_va)]
+            if is_classification:
+                # Filter eval_set to only contain classes present in y_tr
+                valid_mask = np.isin(y_va, le_fold.classes_)
+                y_va_eval = le_fold.transform(np.array(y_va)[valid_mask])
+                
+                if scipy.sparse.issparse(X_va_prep):
+                    X_va_eval = X_va_prep.tocsr()[valid_mask]
+                else:
+                    X_va_eval = X_va_prep[valid_mask]
+                fit_kwargs["eval_set"] = [(X_va_eval, y_va_eval)]
+            else:
+                fit_kwargs["eval_set"] = [(X_va_prep, y_va)]
             if name == "lightgbm":
                 try:
                     from lightgbm import early_stopping, log_evaluation
@@ -208,6 +227,7 @@ def _train_and_evaluate(
         
         y_pred = est.predict(X_va_prep)
         if is_classification:
+            y_pred = le_fold.inverse_transform(y_pred)
             sc = f1_score(y_va, y_pred, average="weighted", zero_division=0)
         else:
             sc = -np.sqrt(mean_squared_error(y_va, y_pred))
