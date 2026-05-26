@@ -808,6 +808,12 @@ def main():
             
             top_features = top_3_shap_features if 'top_3_shap_features' in locals() else []
             
+            cold_models = len(selected_models) if len(selected_models) > 0 else 1
+            total_models = full_model_count if full_model_count > 0 else 1
+            scr = total_models / cold_models
+            pr = 1.0 - (abs(full_score - cs_score) / abs(full_score)) if full_score != 0 else 0.0
+            tus = pr * (cold_models / total_models)
+            
             master_context = {
                 "dataset_profile": profile_dataset(did, X, y, problem_type),
                 "routing": {
@@ -839,6 +845,11 @@ def main():
                 "shap_interpretability": {
                     "top_3_features": top_features,
                     "model_type": "Tree-based" if full_search_best_model_name in ['rf', 'gb', 'xgb_clf', 'xgb_reg', 'lgbm_clf', 'lgbm_reg', 'et_clf', 'et_reg'] else "Linear/Black-box"
+                },
+                "search_efficiency": {
+                    "search_compression_ratio_SCR": round(scr, 4),
+                    "performance_retention_PR": round(pr, 4),
+                    "transfer_utility_score_TUS": round(tus, 4)
                 }
             }
             generate_comprehensive_report(master_context, str(did))
