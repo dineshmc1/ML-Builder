@@ -21,7 +21,7 @@ from cold_start import (
 from heuristics import get_heuristic_suggestions
 from llm_suggester import get_llm_suggestions
 from routing_engine import RoutingConfig, compute_routing_score
-from config import USE_LLM
+from config import USE_LLM, USE_WANDB
 
 # 50 OpenML dataset IDs for classification/regression
 DATASET_IDS = [
@@ -800,6 +800,64 @@ def main():
                 import traceback
                 print(f"  [SHAP] Failed: {e}")
                 traceback.print_exc()
+
+        # Phase 5.7: NAS for AutoDL Path (Cross-Paradigm Comparison)
+        try:
+            from auto_dl_nas import objective_nas
+            import torch
+            import optuna
+            
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            print(f"\n[AutoDL] Running NAS on {device}...")
+            
+            # Map problem type to your dynamic weights
+            w1_dl, w2_dl, w3_dl = (0.8, 0.15, 0.05) if problem_type == 'regression' else (0.6, 0.3, 0.1)
+            
+            # Use fully preprocessed X and y
+            nas_prep, _, _ = build_preprocessor(X)
+            X_nas_prep = nas_prep.fit_transform(X, y)
+            X_train_numpy = X_nas_prep.toarray() if hasattr(X_nas_prep, 'toarray') else np.array(X_nas_prep)
+            y_train_numpy = np.array(y)
+            
+            import logging
+            optuna.logging.set_verbosity(optuna.logging.WARNING)
+            
+            nas_study = optuna.create_study(direction='maximize', study_name=f"nas_mlp_{did}")
+            nas_study.optimize(
+                lambda trial: objective_nas(trial, X_train_numpy, y_train_numpy, problem_type, device, w1_dl, w2_dl, w3_dl), 
+                n_trials=10 # Keep low (10-15) to respect compute budget
+            )
+            
+            best_dl_utility = nas_study.best_value
+            best_dl_params = nas_study.best_params
+            best_ml_utility = final_winning_utility_score
+            best_ml_model_name = full_search_best_model_name
+            
+            print(f"[AutoDL] Best DL Utility: {best_dl_utility:.4f}")
+            print(f"[AutoDL] Best DL Architecture: {best_dl_params}")
+            
+            # Cross-Paradigm Comparison
+            if best_dl_utility > best_ml_utility:
+                final_paradigm_winner = "AutoDL (MLP)"
+                print("🏆 Cross-Paradigm Winner: Deep Learning (MLP)")
+            else:
+                final_paradigm_winner = f"AutoML ({best_ml_model_name})"
+                print(f"🏆 Cross-Paradigm Winner: Classical ML ({best_ml_model_name})")
+                
+            # Log to W&B
+            if USE_WANDB:
+                import wandb
+                wandb.log({
+                    f"nas/{did}/best_dl_utility": best_dl_utility,
+                    f"nas/{did}/best_ml_utility": best_ml_utility,
+                    f"nas/{did}/best_dl_layers": best_dl_params.get('dl_num_layers'),
+                    f"nas/{did}/best_dl_hidden_dim": best_dl_params.get('dl_hidden_dim'),
+                    f"nas/{did}/cross_paradigm_winner": final_paradigm_winner
+                })
+        except Exception as e:
+            import traceback
+            print(f"  [AutoDL NAS] Failed: {e}")
+            traceback.print_exc()
 
         # Phase 5.6: LLM Explainability Report
         try:
