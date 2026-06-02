@@ -878,7 +878,6 @@ def main():
 
         # Phase 5.6: LLM Explainability Report
         try:
-            from dataset_profiler import profile_dataset
             from llm_explainer import generate_comprehensive_report
             
             top_features = top_3_shap_features if 'top_3_shap_features' in locals() else []
