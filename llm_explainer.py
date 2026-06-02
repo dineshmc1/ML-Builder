@@ -14,6 +14,8 @@ def generate_comprehensive_report(master_context, dataset_id):
     2. DO NOT hallucinate or contradict the context (e.g., if a model is the winner, it was NOT dropped).
     3. Base your SHAP hypotheses strictly on the feature names provided.
     
+    Note: If the Paradigm Router selected 'AutoDL', Classical ML metrics and SHAP values will be marked as 'N/A' or 'Bypassed'. In your report, explicitly explain that the system's intelligent routing determined Deep Learning was the mathematically superior approach for this dataset's complexity, thereby bypassing the Classical ML search entirely to save massive amounts of compute time.
+    
     Structure your report exactly with these headings:
     # 1. Executive Summary & Dataset Context
     (Explain what the dataset is likely about based on columns/description, its size, and any data health issues like missing values or class imbalance).

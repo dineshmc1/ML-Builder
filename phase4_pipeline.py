@@ -22,6 +22,8 @@ from heuristics import get_heuristic_suggestions
 from llm_suggester import get_llm_suggestions
 from routing_engine import RoutingConfig, compute_routing_score
 from config import USE_LLM, USE_WANDB
+from paradigm_router import route_paradigm
+from dataset_profiler import profile_dataset
 
 # 50 OpenML dataset IDs for classification/regression
 DATASET_IDS = [
@@ -601,263 +603,278 @@ def main():
         print(f"  Models Selected      : {selected_models}")
         
         # ---- STEP 4: SCORE VALIDATION ----
-        cs_score = 0.0
-        full_score = 0.0
-        full_model_count = 0
-        cold_start_best_model_name = "NONE"
-        full_search_best_model_name = "NONE"
+        # Safe Defaults Initialization
+        paradigm_decision = "AutoML" # Default
+        r_d_score = 0.0
+        llm_score, memory_score, heuristics_score = 0.0, 0.0, 0.0
+
+        cs_score = "N/A (Bypassed by AutoDL)"
+        full_score = "N/A (Bypassed by AutoDL)"
+        best_ml_model_name = "N/A"
+        full_search_best_model_name = "N/A"
+        cold_start_best_model_name = "N/A"
+        top_3_shap_features = ["N/A"]
+        full_model_count = "N/A"
+        models_screened = 0
         final_winning_utility_score = 0.0
+        best_dl_utility = 0.0
+        best_dl_params = {}
 
-        # Cold-start: train only selected models
-        try:
-            preprocessor_cs, _, _ = build_preprocessor(X)
-            test_models = get_models(problem_type, model_names=selected_models)
-            _, cs_scores = baseline_screen(
-                test_models, preprocessor_cs, X, y, problem_type,
-                sample_frac=1.0, cv=3, random_state=42
-            )
-            if cs_scores:
-                from multi_objective import select_best_model_multiobjective, MODEL_COMPLEXITY
-                
-                if problem_type == 'regression':
-                    w1_def, w2_def, w3_def = 0.8, 0.15, 0.05
-                else:
-                    w1_def, w2_def, w3_def = 0.6, 0.3, 0.1
-                
-                best_model_by_score = max(cs_scores, key=lambda k: cs_scores[k]['score'])
-                best_model_by_utility, utility_scores = select_best_model_multiobjective(cs_scores, task_type=problem_type, w1=w1_def, w2=w2_def, w3=w3_def)
-                cs_score = cs_scores[best_model_by_utility]['score']
-                cold_start_best_model_name = best_model_by_utility
-                
-                if best_model_by_score != best_model_by_utility:
-                    print(f"  [Multi-Obj] CS Score winner: {best_model_by_score} vs Utility winner: {best_model_by_utility}")
-                
-                # Log to W&B
-                for name, u_score in utility_scores.items():
-                    log({
-                        f"multiobjective/cs/{name}/score": cs_scores[name]['score'],
-                        f"multiobjective/cs/{name}/fit_time": cs_scores[name]['time'],
-                        f"multiobjective/cs/{name}/complexity": MODEL_COMPLEXITY.get(name, 3),
-                        f"multiobjective/cs/{name}/utility": u_score,
-                    })
+        # Paradigm Routing
+        profile = profile_dataset(did, X, y, problem_type)
+        paradigm_decision, r_d_score, llm_score, memory_score, heuristics_score = route_paradigm(
+            dataset_profile=profile,
+            faiss_store=store,
+            query_embedding=query_vec
+        )
 
-                log({
-                    "multiobjective/cs/best_by_score": best_model_by_score,
-                    "multiobjective/cs/best_by_utility": best_model_by_utility,
-                    "multiobjective/cs/selection_changed": best_model_by_score != best_model_by_utility,
-                    "multiobjective/cs/w1_accuracy": w1_def,
-                    "multiobjective/cs/w2_speed": w2_def,
-                    "multiobjective/cs/w3_simplicity": w3_def,
-                })
-                
-                # --- Phase 5.3: HPO on Top 3 ---
-                top_models_hpo = sorted(utility_scores.keys(), key=lambda x: utility_scores[x], reverse=True)[:3]
-                
-                # Retrieve memory hparams from the nearest neighbor
-                memory_hparams = {}
-                if store._index is not None and len(store.records) > 0:
-                    dists, idxs = store._index.search(np.array([query_vec], dtype=np.float32), 1)
-                    if idxs[0][0] != -1:
-                        nn_record = store.records[idxs[0][0]]
-                        memory_hparams = nn_record.metadata.get("hparams", {})
-                        
-                from hpo_optuna import run_hpo
-                best_hpo_model, best_params = run_hpo(
-                    X, y, preprocessor_cs, top_models_hpo, memory_hparams, problem_type, str(did)
-                )
-                
-                if best_hpo_model:
-                    print(f"  [HPO] Winner: {best_hpo_model} with params {best_params}")
-                    # In a real run, we would re-train this model and overwrite cs_score.
-                    # For now, we just acknowledge the winner.
-                else:
-                    print(f"  [HPO] No HPO winner (all models skipped or failed).")
-        except Exception as e:
-            import traceback
-            print(f"  [Cold-Start Score / HPO] Failed: {e}")
-            traceback.print_exc()
 
-        # Full benchmark: train ALL models
-        try:
-            preprocessor_full, _, _ = build_preprocessor(X)
-            all_models_full = get_models(problem_type)
-            full_model_count = len(all_models_full)
-            _, all_scores = baseline_screen(
-                all_models_full, preprocessor_full, X, y, problem_type,
-                sample_frac=1.0, cv=3, random_state=42
-            )
-            if all_scores:
-                from multi_objective import select_best_model_multiobjective, MODEL_COMPLEXITY
-                
-                if problem_type == 'regression':
-                    w1_def, w2_def, w3_def = 0.8, 0.15, 0.05
-                else:
-                    w1_def, w2_def, w3_def = 0.6, 0.3, 0.1
-                
-                best_model_by_score = max(all_scores, key=lambda k: all_scores[k]['score'])
-                best_model_by_utility, utility_scores = select_best_model_multiobjective(all_scores, task_type=problem_type, w1=w1_def, w2=w2_def, w3=w3_def)
-                full_score = all_scores[best_model_by_utility]['score']
-                full_search_best_model_name = best_model_by_utility
-                final_winning_utility_score = utility_scores[best_model_by_utility]
-                
-                if best_model_by_score != best_model_by_utility:
-                    print(f"  [Multi-Obj] Full Score winner: {best_model_by_score} vs Utility winner: {best_model_by_utility}")
-                
-                # Log to W&B
-                for name, u_score in utility_scores.items():
-                    log({
-                        f"multiobjective/full/{name}/score": all_scores[name]['score'],
-                        f"multiobjective/full/{name}/fit_time": all_scores[name]['time'],
-                        f"multiobjective/full/{name}/complexity": MODEL_COMPLEXITY.get(name, 3),
-                        f"multiobjective/full/{name}/utility": u_score,
-                    })
-
-                log({
-                    "multiobjective/full/best_by_score": best_model_by_score,
-                    "multiobjective/full/best_by_utility": best_model_by_utility,
-                    "multiobjective/full/selection_changed": best_model_by_score != best_model_by_utility,
-                    "multiobjective/full/w1_accuracy": w1_def,
-                    "multiobjective/full/w2_speed": w2_def,
-                    "multiobjective/full/w3_simplicity": w3_def,
-                })
-        except Exception as e:
-            print(f"  [Full Benchmark] Failed: {e}")
-
-        # Print per-dataset comparison
-        score_gap = full_score - cs_score
-        models_saved = full_model_count - len(selected_models)
-        print(f"  Cold-Start Score : {cs_score:.4f} ({len(selected_models)} models tried)")
-        print(f"  Full Train Score : {full_score:.4f} ({full_model_count} models tried)")
-        print(f"  Score Gap        : {score_gap:+.4f}")
-        print(f"  Models Saved     : {models_saved}")
-
-        # Phase 5.4: Confidence Calibration Logging
-        import csv
-        import os
-        
-        csv_file = "confidence_data.csv"
-        if not os.path.exists(csv_file):
-            with open(csv_file, mode='w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow(["dataset_id", "c_sim", "c_cons", "c_agree", "actual_utility"])
-        
-        # 1. Similarity
-        c_sim = similarity if 'similarity' in locals() else 0.0
-        
-        # 2. Consistency
-        c_cons = 0.5
-        if store._index is not None and len(store.records) > 0:
-            dists, idxs = store._index.search(np.array([query_vec], dtype=np.float32), 5)
-            neighbor_scores = []
-            for idx in idxs[0]:
-                if idx != -1:
-                    neighbor_scores.append(store.records[idx].metadata.get('score', 0.0))
-            if len(neighbor_scores) > 1:
-                c_cons = 1.0 / (1.0 + np.var(neighbor_scores) * 10)
-        
-        # 3. Agreement
-        c_agree = 1.0 if cold_start_best_model_name == full_search_best_model_name else 0.0
-        
-        # 4. Actual Utility
-        actual_utility = final_winning_utility_score
-        
-        # Save to CSV
-        with open(csv_file, mode='a', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([did, c_sim, c_cons, c_agree, actual_utility])
-
-        # Phase 5.5: XAI SHAP Explanations
-        if full_search_best_model_name not in ["NONE", "FAILED"]:
-            from shap_explainer import generate_shap_explanations
-            import pandas as pd
-            print(f"  [SHAP] Training final model {full_search_best_model_name} for explanations...")
+        if paradigm_decision == "AutoML":
+            print("🚀 Executing Classical ML Pipeline...")
+            # Cold-start: train only selected models
             try:
-                final_model_instance = get_models(problem_type, [full_search_best_model_name])[full_search_best_model_name]
-                preprocessor_shap, _, _ = build_preprocessor(X)
-                X_prep_shap = preprocessor_shap.fit_transform(X, y)
-                final_model_instance.fit(X_prep_shap, y)
-                
-                # Get feature names after preprocessing if possible
-                try:
-                    feature_names = preprocessor_shap.get_feature_names_out()
-                except:
-                    feature_names = [f"feature_{i}" for i in range(X_prep_shap.shape[1])]
-                    
-                # Convert to dense array if sparse
-                dense_X = X_prep_shap.toarray() if hasattr(X_prep_shap, 'toarray') else X_prep_shap
-                
-                X_train_df = pd.DataFrame(dense_X, columns=feature_names)
-                X_test_df = X_train_df # using same data for simplicity in evaluation phase
-                
-                success, top_3_shap_features = generate_shap_explanations(
-                    model=final_model_instance, 
-                    X_train=X_train_df, 
-                    X_test=X_test_df, 
-                    model_name=full_search_best_model_name, 
-                    dataset_id=str(did)
+                preprocessor_cs, _, _ = build_preprocessor(X)
+                test_models = get_models(problem_type, model_names=selected_models)
+                _, cs_scores = baseline_screen(
+                    test_models, preprocessor_cs, X, y, problem_type,
+                    sample_frac=1.0, cv=3, random_state=42
                 )
+                if cs_scores:
+                    from multi_objective import select_best_model_multiobjective, MODEL_COMPLEXITY
+                
+                    if problem_type == 'regression':
+                        w1_def, w2_def, w3_def = 0.8, 0.15, 0.05
+                    else:
+                        w1_def, w2_def, w3_def = 0.6, 0.3, 0.1
+                
+                    best_model_by_score = max(cs_scores, key=lambda k: cs_scores[k]['score'])
+                    best_model_by_utility, utility_scores = select_best_model_multiobjective(cs_scores, task_type=problem_type, w1=w1_def, w2=w2_def, w3=w3_def)
+                    cs_score = cs_scores[best_model_by_utility]['score']
+                    cold_start_best_model_name = best_model_by_utility
+                
+                    if best_model_by_score != best_model_by_utility:
+                        print(f"  [Multi-Obj] CS Score winner: {best_model_by_score} vs Utility winner: {best_model_by_utility}")
+                
+                    # Log to W&B
+                    for name, u_score in utility_scores.items():
+                        log({
+                            f"multiobjective/cs/{name}/score": cs_scores[name]['score'],
+                            f"multiobjective/cs/{name}/fit_time": cs_scores[name]['time'],
+                            f"multiobjective/cs/{name}/complexity": MODEL_COMPLEXITY.get(name, 3),
+                            f"multiobjective/cs/{name}/utility": u_score,
+                        })
+
+                    log({
+                        "multiobjective/cs/best_by_score": best_model_by_score,
+                        "multiobjective/cs/best_by_utility": best_model_by_utility,
+                        "multiobjective/cs/selection_changed": best_model_by_score != best_model_by_utility,
+                        "multiobjective/cs/w1_accuracy": w1_def,
+                        "multiobjective/cs/w2_speed": w2_def,
+                        "multiobjective/cs/w3_simplicity": w3_def,
+                    })
+                
+                    # --- Phase 5.3: HPO on Top 3 ---
+                    top_models_hpo = sorted(utility_scores.keys(), key=lambda x: utility_scores[x], reverse=True)[:3]
+                
+                    # Retrieve memory hparams from the nearest neighbor
+                    memory_hparams = {}
+                    if store._index is not None and len(store.records) > 0:
+                        dists, idxs = store._index.search(np.array([query_vec], dtype=np.float32), 1)
+                        if idxs[0][0] != -1:
+                            nn_record = store.records[idxs[0][0]]
+                            memory_hparams = nn_record.metadata.get("hparams", {})
+                        
+                    from hpo_optuna import run_hpo
+                    best_hpo_model, best_params = run_hpo(
+                        X, y, preprocessor_cs, top_models_hpo, memory_hparams, problem_type, str(did)
+                    )
+                
+                    if best_hpo_model:
+                        print(f"  [HPO] Winner: {best_hpo_model} with params {best_params}")
+                        # In a real run, we would re-train this model and overwrite cs_score.
+                        # For now, we just acknowledge the winner.
+                    else:
+                        print(f"  [HPO] No HPO winner (all models skipped or failed).")
             except Exception as e:
                 import traceback
-                print(f"  [SHAP] Failed: {e}")
+                print(f"  [Cold-Start Score / HPO] Failed: {e}")
                 traceback.print_exc()
 
-        # Phase 5.7: NAS for AutoDL Path (Cross-Paradigm Comparison)
-        try:
-            from auto_dl_nas import objective_nas
-            import torch
-            import optuna
-            
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-            print(f"\n[AutoDL] Running NAS on {device}...")
-            
-            # Map problem type to your dynamic weights
-            w1_dl, w2_dl, w3_dl = (0.8, 0.15, 0.05) if problem_type == 'regression' else (0.6, 0.3, 0.1)
-            
-            # Use fully preprocessed X and y
-            nas_prep, _, _ = build_preprocessor(X)
-            X_nas_prep = nas_prep.fit_transform(X, y)
-            X_train_numpy = X_nas_prep.toarray() if hasattr(X_nas_prep, 'toarray') else np.array(X_nas_prep)
-            y_train_numpy = np.array(y)
-            
-            import logging
-            optuna.logging.set_verbosity(optuna.logging.WARNING)
-            
-            nas_study = optuna.create_study(direction='maximize', study_name=f"nas_mlp_{did}")
-            nas_study.optimize(
-                lambda trial: objective_nas(trial, X_train_numpy, y_train_numpy, problem_type, device, w1_dl, w2_dl, w3_dl), 
-                n_trials=10 # Keep low (10-15) to respect compute budget
-            )
-            
-            best_dl_utility = nas_study.best_value
-            best_dl_params = nas_study.best_params
-            best_ml_utility = final_winning_utility_score
-            best_ml_model_name = full_search_best_model_name
-            
-            print(f"[AutoDL] Best DL Utility: {best_dl_utility:.4f}")
-            print(f"[AutoDL] Best DL Architecture: {best_dl_params}")
-            
-            # Cross-Paradigm Comparison
-            if best_dl_utility > best_ml_utility:
-                final_paradigm_winner = "AutoDL (MLP)"
-                print("🏆 Cross-Paradigm Winner: Deep Learning (MLP)")
-            else:
-                final_paradigm_winner = f"AutoML ({best_ml_model_name})"
-                print(f"🏆 Cross-Paradigm Winner: Classical ML ({best_ml_model_name})")
+            # Full benchmark: train ALL models
+            try:
+                preprocessor_full, _, _ = build_preprocessor(X)
+                all_models_full = get_models(problem_type)
+                full_model_count = len(all_models_full)
+                _, all_scores = baseline_screen(
+                    all_models_full, preprocessor_full, X, y, problem_type,
+                    sample_frac=1.0, cv=3, random_state=42
+                )
+                if all_scores:
+                    from multi_objective import select_best_model_multiobjective, MODEL_COMPLEXITY
                 
-            # Log to W&B
-            if USE_WANDB:
-                import wandb
-                wandb.log({
-                    f"nas/{did}/best_dl_utility": best_dl_utility,
-                    f"nas/{did}/best_ml_utility": best_ml_utility,
-                    f"nas/{did}/best_dl_layers": best_dl_params.get('dl_num_layers'),
-                    f"nas/{did}/best_dl_hidden_dim": best_dl_params.get('dl_hidden_dim'),
-                    f"nas/{did}/cross_paradigm_winner": final_paradigm_winner
-                })
-        except Exception as e:
-            import traceback
-            print(f"  [AutoDL NAS] Failed: {e}")
-            traceback.print_exc()
+                    if problem_type == 'regression':
+                        w1_def, w2_def, w3_def = 0.8, 0.15, 0.05
+                    else:
+                        w1_def, w2_def, w3_def = 0.6, 0.3, 0.1
+                
+                    best_model_by_score = max(all_scores, key=lambda k: all_scores[k]['score'])
+                    best_model_by_utility, utility_scores = select_best_model_multiobjective(all_scores, task_type=problem_type, w1=w1_def, w2=w2_def, w3=w3_def)
+                    full_score = all_scores[best_model_by_utility]['score']
+                    full_search_best_model_name = best_model_by_utility
+                    final_winning_utility_score = utility_scores[best_model_by_utility]
+                
+                    if best_model_by_score != best_model_by_utility:
+                        print(f"  [Multi-Obj] Full Score winner: {best_model_by_score} vs Utility winner: {best_model_by_utility}")
+                
+                    # Log to W&B
+                    for name, u_score in utility_scores.items():
+                        log({
+                            f"multiobjective/full/{name}/score": all_scores[name]['score'],
+                            f"multiobjective/full/{name}/fit_time": all_scores[name]['time'],
+                            f"multiobjective/full/{name}/complexity": MODEL_COMPLEXITY.get(name, 3),
+                            f"multiobjective/full/{name}/utility": u_score,
+                        })
+
+                    log({
+                        "multiobjective/full/best_by_score": best_model_by_score,
+                        "multiobjective/full/best_by_utility": best_model_by_utility,
+                        "multiobjective/full/selection_changed": best_model_by_score != best_model_by_utility,
+                        "multiobjective/full/w1_accuracy": w1_def,
+                        "multiobjective/full/w2_speed": w2_def,
+                        "multiobjective/full/w3_simplicity": w3_def,
+                    })
+            except Exception as e:
+                print(f"  [Full Benchmark] Failed: {e}")
+
+            # Print per-dataset comparison
+            score_gap = full_score - cs_score
+            models_saved = full_model_count - len(selected_models)
+            print(f"  Cold-Start Score : {cs_score:.4f} ({len(selected_models)} models tried)")
+            print(f"  Full Train Score : {full_score:.4f} ({full_model_count} models tried)")
+            print(f"  Score Gap        : {score_gap:+.4f}")
+            print(f"  Models Saved     : {models_saved}")
+
+            # Phase 5.4: Confidence Calibration Logging
+            import csv
+            import os
+        
+            csv_file = "confidence_data.csv"
+            if not os.path.exists(csv_file):
+                with open(csv_file, mode='w', newline='') as f:
+                    writer = csv.writer(f)
+                    writer.writerow(["dataset_id", "c_sim", "c_cons", "c_agree", "actual_utility"])
+        
+            # 1. Similarity
+            c_sim = similarity if 'similarity' in locals() else 0.0
+        
+            # 2. Consistency
+            c_cons = 0.5
+            if store._index is not None and len(store.records) > 0:
+                dists, idxs = store._index.search(np.array([query_vec], dtype=np.float32), 5)
+                neighbor_scores = []
+                for idx in idxs[0]:
+                    if idx != -1:
+                        neighbor_scores.append(store.records[idx].metadata.get('score', 0.0))
+                if len(neighbor_scores) > 1:
+                    c_cons = 1.0 / (1.0 + np.var(neighbor_scores) * 10)
+        
+            # 3. Agreement
+            c_agree = 1.0 if cold_start_best_model_name == full_search_best_model_name else 0.0
+        
+            # 4. Actual Utility
+            actual_utility = final_winning_utility_score
+        
+            # Save to CSV
+            with open(csv_file, mode='a', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([did, c_sim, c_cons, c_agree, actual_utility])
+
+            # Phase 5.5: XAI SHAP Explanations
+            if full_search_best_model_name not in ["NONE", "FAILED"]:
+                from shap_explainer import generate_shap_explanations
+                import pandas as pd
+                print(f"  [SHAP] Training final model {full_search_best_model_name} for explanations...")
+                try:
+                    final_model_instance = get_models(problem_type, [full_search_best_model_name])[full_search_best_model_name]
+                    preprocessor_shap, _, _ = build_preprocessor(X)
+                    X_prep_shap = preprocessor_shap.fit_transform(X, y)
+                    final_model_instance.fit(X_prep_shap, y)
+                
+                    # Get feature names after preprocessing if possible
+                    try:
+                        feature_names = preprocessor_shap.get_feature_names_out()
+                    except:
+                        feature_names = [f"feature_{i}" for i in range(X_prep_shap.shape[1])]
+                    
+                    # Convert to dense array if sparse
+                    dense_X = X_prep_shap.toarray() if hasattr(X_prep_shap, 'toarray') else X_prep_shap
+                
+                    X_train_df = pd.DataFrame(dense_X, columns=feature_names)
+                    X_test_df = X_train_df # using same data for simplicity in evaluation phase
+                
+                    success, top_3_shap_features = generate_shap_explanations(
+                        model=final_model_instance, 
+                        X_train=X_train_df, 
+                        X_test=X_test_df, 
+                        model_name=full_search_best_model_name, 
+                        dataset_id=str(did)
+                    )
+                except Exception as e:
+                    import traceback
+                    print(f"  [SHAP] Failed: {e}")
+                    traceback.print_exc()
+
+        elif paradigm_decision == "AutoDL":
+            print("🧠 Executing AutoDL NAS Pipeline...")
+            # Phase 5.7: NAS for AutoDL Path 
+            try:
+                from auto_dl_nas import objective_nas
+                import torch
+                import optuna
+            
+                device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+                print(f"\n[AutoDL] Running NAS on {device}...")
+            
+                # Map problem type to your dynamic weights
+                w1_dl, w2_dl, w3_dl = (0.8, 0.15, 0.05) if problem_type == 'regression' else (0.6, 0.3, 0.1)
+            
+                # Use fully preprocessed X and y
+                nas_prep, _, _ = build_preprocessor(X)
+                X_nas_prep = nas_prep.fit_transform(X, y)
+                X_train_numpy = X_nas_prep.toarray() if hasattr(X_nas_prep, 'toarray') else np.array(X_nas_prep)
+                y_train_numpy = np.array(y)
+            
+                import logging
+                optuna.logging.set_verbosity(optuna.logging.WARNING)
+            
+                nas_study = optuna.create_study(direction='maximize', study_name=f"nas_mlp_{did}")
+                nas_study.optimize(
+                    lambda trial: objective_nas(trial, X_train_numpy, y_train_numpy, problem_type, device, w1_dl, w2_dl, w3_dl), 
+                    n_trials=10 # Keep low (10-15) to respect compute budget
+                )
+            
+                best_dl_utility = nas_study.best_value
+                best_dl_params = nas_study.best_params
+                best_ml_utility = final_winning_utility_score
+                best_ml_model_name = full_search_best_model_name
+            
+                print(f"[AutoDL] Best DL Utility: {best_dl_utility:.4f}")
+                print(f"[AutoDL] Best DL Architecture: {best_dl_params}")
+            
+                
+                # Log to W&B
+                if USE_WANDB:
+                    import wandb
+                    wandb.log({
+                        f"nas/{did}/best_dl_utility": best_dl_utility,
+                        f"nas/{did}/best_ml_utility": best_ml_utility,
+                        f"nas/{did}/best_dl_layers": best_dl_params.get('dl_num_layers'),
+                        f"nas/{did}/best_dl_hidden_dim": best_dl_params.get('dl_hidden_dim')
+                    })
+            except Exception as e:
+                import traceback
+                print(f"  [AutoDL NAS] Failed: {e}")
+                traceback.print_exc()
 
         # Phase 5.6: LLM Explainability Report
         try:
@@ -866,14 +883,26 @@ def main():
             
             top_features = top_3_shap_features if 'top_3_shap_features' in locals() else []
             
-            cold_models = len(selected_models) if len(selected_models) > 0 else 1
-            total_models = full_model_count if full_model_count > 0 else 1
-            scr = total_models / cold_models
-            pr = 1.0 - (abs(full_score - cs_score) / abs(full_score)) if full_score != 0 else 0.0
-            tus = pr * (cold_models / total_models)
+            if paradigm_decision == "AutoML":
+                cold_models = len(selected_models) if len(selected_models) > 0 else 1
+                total_models = full_model_count if full_model_count > 0 else 1
+                scr = total_models / cold_models
+                pr = 1.0 - (abs(full_score - cs_score) / abs(full_score)) if full_score != 0 else 0.0
+                tus = pr * (cold_models / total_models)
+            else:
+                scr = "N/A"
+                pr = "N/A"
+                tus = "N/A"
             
             master_context = {
-                "dataset_profile": profile_dataset(did, X, y, problem_type),
+                "paradigm_routing": {
+                    "decision": paradigm_decision,
+                    "R_D_score": round(float(r_d_score), 4),
+                    "llm_signal": round(float(llm_score), 4),
+                    "memory_signal": round(float(memory_score), 4),
+                    "heuristic_signal": round(float(heuristics_score), 4)
+                },
+                "dataset_profile": profile,
                 "routing": {
                     "decision": decision,
                     "similarity_score": round(float(c_sim), 4) if 'c_sim' in locals() else 0.0,
@@ -883,11 +912,11 @@ def main():
                 "training_and_hpo": {
                     "models_screened": full_model_count,
                     "models_dropped": list(set([n for n in all_scores.keys()]) - set(selected_models)) if 'all_scores' in locals() else [],
-                    "final_model": full_search_best_model_name,
+                    "final_model": full_search_best_model_name if paradigm_decision == "AutoML" else "DynamicMLP (NAS)",
                     "hpo_trials_run": 10,
                     "best_hpo_params": best_params if 'best_params' in locals() else {},
-                    "cold_start_score": round(float(cs_score), 4),
-                    "full_train_score": round(float(full_score), 4)
+                    "cold_start_score": round(float(cs_score), 4) if isinstance(cs_score, (int, float)) else cs_score,
+                    "full_train_score": round(float(full_score), 4) if isinstance(full_score, (int, float)) else full_score
                 },
                 "multi_objective": {
                     "weights_used": [w1_def, w2_def, w3_def] if 'w1_def' in locals() else [],
