@@ -17,3 +17,4 @@ online_casino.csv
 .env
 *.log
 wandb/
+.understand-anything/
