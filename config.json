@@ -1,34 +1,6 @@
 {
-    "dataset": null,
-    "target": null,
-    "test_size": 0.2,
-    "models": ["all"],
-    "sample_fraction": 0.3,
-    "cv_folds": 5,
-    "max_time_minutes": null,
-    "feature_selection": null,
-    "feature_selection_k": 10,
-    "tune": false,
-    "tune_method": "randomized",
-    "tune_iter": 20,
-    "save_metrics_csv": true,
-    "output_dir": "models",
-    "random_state": 42,
-    "report": false,
-    "no_shap": false,
-    "reports_dir": "reports",
-    "enable_fe": false,
-    "cardinality_threshold": 0.05,
-    "skew_threshold": 1.0,
-    "interaction_features": 0,
-    "outlier_strategy": "cap",
-    "encoding_strategy": "frequency",
-    "cold_start": {
-        "k_neighbors": 10,
-        "lambda_sensitivity": 0.5,
-        "memory_models_count": 3,
-        "fallback_models_count": 5,
-        "use_top_k_mean": true,
-        "top_k_for_score": 3
-    }
+    "target_column": "income",
+    "problem_type": "classification",
+    "notes": "No obvious data quality issues detected.",
+    "csv_path": "C:\\Dinesh\\Datasets\\adult_clean.csv"
 }

@@ -1,4 +1,14 @@
-import time
+import sys
+import re
+
+with open("phase4_pipeline.py", "r", encoding="utf-8") as f:
+    lines = f.readlines()
+
+# 1. Clean up lines 29 to 142 (the leftover broken function body)
+# Wait, let's just find where it says `X.columns = [` without being in a function.
+# Or better, just recreate phase4_pipeline.py from scratch based on what we need.
+
+new_code = """import time
 import numpy as np
 import pandas as pd
 import faiss
@@ -59,7 +69,7 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
     
     # Safety Check: If fewer than 3 valid neighbors found, trigger cold-start heuristics
     if len(neighbors) < 3:
-        print("\n⚠️ WARNING: Fewer than 3 valid neighbors found in FAISS. Triggering cold-start fallback heuristics.")
+        print("\\n⚠️ WARNING: Fewer than 3 valid neighbors found in FAISS. Triggering cold-start fallback heuristics.")
         from heuristics import get_heuristic_suggestions
         best_retrieved_models = get_heuristic_suggestions(meta_features, problem_type)[:3]
         warm_params = {}
@@ -72,7 +82,7 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
         best_retrieved_models = list(dict.fromkeys(best_retrieved_models))[:3]
         warm_params = neighbors[0].metadata.get("hparams", {})
         
-        print(f"\n📂 DATASET: {did} | TARGET: {y.name if hasattr(y, 'name') else 'Unknown'} | TYPE: {problem_type}\n")
+        print(f"\\n📂 DATASET: {did} | TARGET: {y.name if hasattr(y, 'name') else 'Unknown'} | TYPE: {problem_type}\\n")
         print("🔍 MEMORY RETRIEVAL (Top 3 Similar Past Experiments):")
         print("┌────────────┬────────────┬──────────────┬──────────────────────────────┐")
         print("│ Dataset    │ Similarity │ Best Model   │ Warm-Start Hyperparameters   │")
@@ -81,7 +91,7 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
             did_name = n.metadata.get("dataset_id", "Unknown")
             sim = dists[0][i]
             b_model = n.models[0] if n.models else "Unknown"
-            hp = str(n.metadata.get("hparams", {})).replace("\n", "")[:28]
+            hp = str(n.metadata.get("hparams", {})).replace("\\n", "")[:28]
             print(f"│ {did_name:<10} │ {sim:<10.4f} │ {b_model:<12} │ {hp:<28} │")
         print("└────────────┴────────────┴──────────────┴──────────────────────────────┘")
 
@@ -94,7 +104,7 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
         llm_suggestion = f"LLM unavailable ({e}). Relying solely on memory retrieval."
         llm_models = []
         
-    print(f"\n🤖 LLM SUGGESTION: {llm_suggestion}\n")
+    print(f"\\n🤖 LLM SUGGESTION: {llm_suggestion}\\n")
     print("⚙️ CONFIGURING PIPELINE...")
     
     # 4. Paradigm Routing
@@ -111,7 +121,7 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
     print(f"→ Multi-Objective Weights: Accuracy={w1_def}, Speed={w2_def}, Complexity={w3_def}")
     
     if paradigm_decision == "AutoML":
-        print("\n🚀 Executing Classical ML Pipeline...")
+        print("\\n🚀 Executing Classical ML Pipeline...")
         preprocessor_cs, _, _ = build_preprocessor(X)
         
         full_search_best_model_name = "NONE"
@@ -193,9 +203,10 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
             print(f"  [Phase 5.6 Report] Failed: {e}")
             
     elif paradigm_decision == "AutoDL":
-        print("\n🧠 Executing AutoDL NAS Pipeline...")
+        print("\\n🧠 Executing AutoDL NAS Pipeline...")
         try:
             from auto_dl_nas import objective_nas
+            from feature_processing import build_preprocessor
             import torch
             import optuna
             
@@ -229,18 +240,9 @@ def main():
         from onboarding_agent import run_onboarding_cli
         csv_path = input("Enter path to dataset CSV: ")
         config = run_onboarding_cli(csv_path)
-        if config and "csv_path" not in config:
-            config["csv_path"] = csv_path
-            with open("config.json", "w") as f:
-                json.dump(config, f, indent=4)
     else:
         config = json.load(open("config.json"))
         print(f"📂 Loaded existing config: {config.get('target_column', 'Unknown')} ({config.get('problem_type', 'Unknown')})")
-        if "csv_path" not in config:
-            csv_path = input("Enter path to dataset CSV (missing in config.json): ")
-            config["csv_path"] = csv_path
-            with open("config.json", "w") as f:
-                json.dump(config, f, indent=4)
     
     MEMORY_INDEX_PATH = "memory_store.faiss"
     MEMORY_META_PATH  = "memory_store.pkl"
@@ -253,7 +255,7 @@ def main():
         raise FileNotFoundError("Memory store not found. Run build_memory.py first.")
         
     print("🤖 Loading pre-trained Task Encoder...")
-    from task_encoder import SiameseEncoder, TaskEncoderConfig, encode_all
+    from task_encoder import SiameseEncoder, TaskEncoderConfig
     import torch
     cfg = TaskEncoderConfig(input_dim=10, hidden_dim=64, output_dim=32)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -264,10 +266,6 @@ def main():
     encoder.load_state_dict(torch.load(encoder_path, map_location=device, weights_only=True))
     encoder.eval()
     
-    # Rebuild index in memory using the 32D task encoder to match query dimensions
-    learned_vectors = encode_all(store, encoder)
-    store.rebuild_index(learned_vectors)
-    
     # Check if this is a LOCAL dataset run
     if "csv_path" in config and config["csv_path"]:
         csv_path = config["csv_path"]
@@ -275,12 +273,16 @@ def main():
         X, y, problem_type = load_local_dataset(csv_path, target)
         if X is not None:
             run_single_dataset_pipeline(X, y, problem_type, store, encoder, did=csv_path, validate=args.validate)
-            print("\n✅ Local dataset processing complete!")
+            print("\\n✅ Local dataset processing complete!")
         else:
-            print("\n❌ Local dataset failed to load.")
+            print("\\n❌ Local dataset failed to load.")
     else:
         print("No valid 'csv_path' found in config.json. Pipeline handles local datasets only.")
 
 
 if __name__ == "__main__":
     main()
+"""
+
+with open("phase4_pipeline.py", "w", encoding="utf-8") as f:
+    f.write(new_code)

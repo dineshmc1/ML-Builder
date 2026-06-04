@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import train_test_split
 
+from sklearn.preprocessing import LabelEncoder
+
 # Data bundle dataclass returned by the loader
 @dataclass
 class DataBundle:
@@ -34,6 +36,25 @@ def detect_problem_type(y: pd.Series, threshold: int = 10) -> str:
     if n_unique < threshold:
         return "classification"
     return "regression"
+
+
+def load_local_dataset(csv_path, target_column):
+    """Load and preprocess a local CSV based on onboarding config."""
+    df = pd.read_csv(csv_path)
+    
+    if target_column not in df.columns:
+        raise ValueError(f"Target column '{target_column}' not found in {csv_path}")
+        
+    y = df[target_column]
+    X = df.drop(columns=[target_column])
+    
+    # Detect problem type and encode labels
+    problem_type = detect_problem_type(y)
+    if problem_type == 'classification':
+        le = LabelEncoder()
+        y = pd.Series(le.fit_transform(y.astype(str)), name=y.name, index=y.index)
+        
+    return X, y, problem_type
 
 
 def load_dataset(

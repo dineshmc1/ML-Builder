@@ -52,7 +52,7 @@ def calculate_memory_d(faiss_store, query_embedding, k=5):
         if faiss_store._index is None or len(faiss_store.records) == 0:
             return 0.0
         # FAISS expects 2D array for search
-        q_vec = np.array([query_embedding], dtype=np.float32)
+        q_vec = np.ascontiguousarray(np.reshape(query_embedding, (1, -1)), dtype=np.float32)
         distances, indices = faiss_store._index.search(q_vec, k)
         dl_count = 0
         valid_neighbors = 0
