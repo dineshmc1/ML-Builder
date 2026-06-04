@@ -18,3 +18,4 @@ online_casino.csv
 *.log
 wandb/
 .understand-anything/
+.tmp-dashboard/
