@@ -6,6 +6,7 @@ import random
 import os
 import json
 import argparse
+import re
 
 # Custom imports from our pipeline
 from dataset_embedding import compute_dataset_embedding
@@ -42,9 +43,18 @@ def extract_meta_features(X, y) -> dict:
         "majority_class_ratio": float(y.value_counts(normalize=True).iloc[0])
     }
 
+def sanitize_filename(dataset_id_or_path):
+    """Converts a full path or ID into a safe filename string."""
+    base = os.path.basename(str(dataset_id_or_path))
+    safe_name = re.sub(r'[\\/*?:"<>|]', '_', os.path.splitext(base)[0])
+    return safe_name
+
 def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local", validate=False):
     import numpy as np
     from wandb_logger import log
+    
+    did_safe = sanitize_filename(did)
+    did = did_safe
     
     # 1. Extract meta-features
     from task_encoder import encode_dataset
