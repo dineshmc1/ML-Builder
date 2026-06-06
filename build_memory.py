@@ -9,7 +9,7 @@ from data_loader import detect_problem_type
 from data_cleaner import clean
 from feature_processing import build_preprocessor
 from model_trainer import get_models, baseline_screen
-from cold_start import (
+from cold_start import MemoryStore
 from config import USE_LLM, USE_WANDB
 
 DATASET_IDS = [
@@ -48,7 +48,19 @@ DATASET_IDS = [
     # High dimensional
     1169, 1170, 1442, 1443, 1444, 1446, 1447, 1448,
     # Various / Leftovers
-    34
+    34,
+    
+    # ---------------- 150 ADDITIONAL NEW TABULAR DATASETS ----------------
+    119, 137, 164, 185, 186, 187, 190, 191, 192, 194, 195, 196, 198, 199, 200, 
+    202, 203, 204, 205, 206, 207, 209, 210, 213, 215, 216, 217, 218, 222, 223, 
+    224, 231, 232, 251, 255, 275, 276, 277, 278, 279, 285, 287, 294, 296, 298, 
+    299, 301, 308, 310, 311, 315, 316, 327, 328, 329, 333, 334, 335, 336, 337, 
+    338, 340, 342, 343, 344, 350, 357, 373, 374, 375, 376, 377, 378, 379, 380, 
+    381, 382, 424, 434, 443, 444, 446, 448, 449, 450, 451, 452, 453, 454, 455, 
+    456, 458, 459, 460, 461, 463, 464, 465, 466, 467, 468, 469, 470, 471, 472, 
+    473, 474, 475, 477, 479, 480, 481, 482, 488, 490, 491, 492, 494, 495, 497, 
+    498, 500, 501, 502, 503, 504, 505, 506, 509, 510, 511, 512, 513, 516, 518, 
+    519, 520, 521, 522, 523, 524, 525, 526, 527, 528, 529, 530, 533, 534, 535
 ]
 
 def load_and_preprocess_openml(dataset_id):
@@ -294,16 +306,6 @@ def build_memory(train_ids, store=None, config=None):
     print("\n[Memory Builder] Initializing FAISS Index...")
     store.build_index()
     return store
-
-ROUTING_CFG = RoutingConfig(
-    lambda_memory=0.6,
-    lambda_llm=0.2,
-    lambda_heuristic=0.2,
-    use_llm=USE_LLM,
-    top_k_output=3
-)
-
-
 
 def main():
     import os

@@ -1,6 +1,0 @@
-{
-    "target_column": "income",
-    "problem_type": "classification",
-    "notes": "The target column 'income' suggests a binary classification problem. No obvious data quality issues are present in the provided preview.",
-    "csv_path": "C:\\Dinesh\\Datasets\\adult_clean.csv"
-}

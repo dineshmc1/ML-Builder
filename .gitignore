@@ -19,3 +19,4 @@ online_casino.csv
 wandb/
 .understand-anything/
 .tmp-dashboard/
+config.json

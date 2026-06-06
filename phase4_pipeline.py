@@ -61,6 +61,9 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
     raw_vec = compute_dataset_embedding(X, y)
     query_vec = encode_dataset(raw_vec, encoder).reshape(1, -1).astype(np.float32)
     
+    print(f"\\n[DEBUG] Raw Meta-Features (10D): {np.round(raw_vec, 4)}")
+    print(f"[DEBUG] Learned Embedding (32D) [First 5]: {np.round(query_vec[0][:5], 4)} ...")
+    
     meta_features = extract_meta_features(X, y)
     
     # 2. Query FAISS memory
@@ -201,6 +204,27 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
             generate_comprehensive_report(master_context, str(did))
         except Exception as e:
             print(f"  [Phase 5.6 Report] Failed: {e}")
+            
+        # Store in FAISS memory mapping using MemoryStore
+        if full_search_best_model_name not in ["NONE", "FAILED"]:
+            print(f"\\n[Memory] Saving execution results to FAISS...")
+            metadata = {
+                "dataset_id": str(did),
+                "problem_type": problem_type,
+                "hparams": {full_search_best_model_name: best_params}
+            }
+            store.add(str(did), raw_vec, [full_search_best_model_name], metadata)
+            
+            # Rebuild index with 32D embeddings to keep it consistent
+            from task_encoder import encode_all
+            learned_vectors = encode_all(store, encoder)
+            store.rebuild_index(learned_vectors)
+            
+            # Save to disk
+            MEMORY_INDEX_PATH = "memory_store.faiss"
+            MEMORY_META_PATH  = "memory_store.pkl"
+            store.save_index(MEMORY_INDEX_PATH, MEMORY_META_PATH)
+            print("✅ Run successfully added to FAISS Memory Store!")
             
     elif paradigm_decision == "AutoDL":
         print("\n🧠 Executing AutoDL NAS Pipeline...")

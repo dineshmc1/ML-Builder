@@ -207,6 +207,7 @@ def train_encoder(store: MemoryStore, config: TaskEncoderConfig = None, force_re
     
     train_loader = DataLoader(PairDataset(train_pairs), batch_size=config.batch_size, shuffle=True)
     val_loader = DataLoader(PairDataset(val_pairs), batch_size=config.batch_size, shuffle=False)
+    print(f"[TaskEncoder] Generated {len(train_pairs)} training pairs and {len(val_pairs)} validation pairs.")
 
     criterion = ContrastiveLoss(margin=config.margin)
     optimizer = optim.Adam(encoder.parameters(), lr=config.lr, weight_decay=1e-4)
@@ -246,6 +247,9 @@ def train_encoder(store: MemoryStore, config: TaskEncoderConfig = None, force_re
         history_dict["val_loss"].append(avg_val_loss)
 
         scheduler.step(avg_val_loss)
+
+        if epoch % 10 == 0 or epoch == 1:
+            print(f"[TaskEncoder] Epoch {epoch}/{config.epochs} | Train Loss: {avg_train_loss:.4f} | Val Loss: {avg_val_loss:.4f}")
 
         log({
             "encoder/epoch":        epoch,

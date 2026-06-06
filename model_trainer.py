@@ -26,7 +26,8 @@ from sklearn.ensemble import (
     GradientBoostingClassifier, GradientBoostingRegressor,
     ExtraTreesClassifier, ExtraTreesRegressor,
     AdaBoostClassifier, AdaBoostRegressor,
-    BaggingClassifier, BaggingRegressor
+    BaggingClassifier, BaggingRegressor,
+    HistGradientBoostingClassifier, HistGradientBoostingRegressor
 )
 from sklearn.svm import SVC, SVR
 from sklearn.neighbors import KNeighborsClassifier, KNeighborsRegressor
@@ -50,11 +51,11 @@ CLASSIFICATION_MODELS = {
     "dt_clf":      DecisionTreeClassifier(random_state=42),
     "svc":         SVC(probability=True, random_state=42),
     "mlp_clf":     MLPClassifier(max_iter=5000, early_stopping=True, validation_fraction=0.1, n_iter_no_change=20, random_state=42),
-    "rf":          RandomForestClassifier(n_estimators=100, random_state=42),
-    "et_clf":      ExtraTreesClassifier(n_estimators=100, random_state=42),
+    "rf":          RandomForestClassifier(n_estimators=100, n_jobs=-1, random_state=42),
+    "et_clf":      ExtraTreesClassifier(n_estimators=100, n_jobs=-1, random_state=42),
     "ada_clf":     AdaBoostClassifier(n_estimators=100, random_state=42),
-    "bag_clf":     BaggingClassifier(n_estimators=20, random_state=42),
-    "gb":          GradientBoostingClassifier(n_estimators=100, random_state=42),
+    "bag_clf":     BaggingClassifier(n_estimators=20, n_jobs=-1, random_state=42),
+    "gb":          HistGradientBoostingClassifier(random_state=42),
     "lgbm_clf":    LGBMClassifier(n_estimators=100, random_state=42, verbose=-1),
     "xgb_clf":     XGBClassifier(n_estimators=100, random_state=42,
                                   eval_metric="logloss", verbosity=0),
@@ -69,11 +70,11 @@ REGRESSION_MODELS = {
     "dt_reg":      DecisionTreeRegressor(random_state=42),
     "svr":         SVR(),
     "mlp_reg":     MLPRegressor(max_iter=5000, early_stopping=True, validation_fraction=0.1, n_iter_no_change=20, random_state=42),
-    "rf_reg":      RandomForestRegressor(n_estimators=100, random_state=42),
-    "et_reg":      ExtraTreesRegressor(n_estimators=100, random_state=42),
+    "rf_reg":      RandomForestRegressor(n_estimators=100, n_jobs=-1, random_state=42),
+    "et_reg":      ExtraTreesRegressor(n_estimators=100, n_jobs=-1, random_state=42),
     "ada_reg":     AdaBoostRegressor(n_estimators=100, random_state=42),
-    "bag_reg":     BaggingRegressor(n_estimators=20, random_state=42),
-    "gb_reg":      GradientBoostingRegressor(n_estimators=100, random_state=42),
+    "bag_reg":     BaggingRegressor(n_estimators=20, n_jobs=-1, random_state=42),
+    "gb_reg":      HistGradientBoostingRegressor(random_state=42),
     "lgbm_reg":    LGBMRegressor(n_estimators=100, random_state=42, verbose=-1),
     "xgb_reg":     XGBRegressor(n_estimators=100, random_state=42, verbosity=0),
 }  # 15 regression models
