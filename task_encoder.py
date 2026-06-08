@@ -310,3 +310,11 @@ def encode_all(store: MemoryStore, encoder: nn.Module) -> dict:
     for r in store.records:
         learned_vectors[r.key] = encode_dataset(r.embedding, encoder)
     return learned_vectors
+
+def load_encoder(path):
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    encoder = SiameseEncoder(input_dim=10, hidden_dim=64, output_dim=32).to(device)
+    encoder.load_state_dict(torch.load(path, map_location=device))
+    encoder.eval()
+    return encoder
+

@@ -110,12 +110,7 @@ def run_hpo(X, y, preprocessor, top_models, memory_hparams, problem_type, datase
                     
             if valid_params:
                 print(f"  [HPO] Warm-starting {model_name} with memory params.")
-                trial = optuna.trial.create_trial(
-                    params=valid_params,
-                    distributions=search_space,
-                    value=None
-                )
-                study.add_trial(trial)
+                study.enqueue_trial(valid_params)
                 warm_start_used = True
         
         # W&B Callback (logging to the active pipeline run)

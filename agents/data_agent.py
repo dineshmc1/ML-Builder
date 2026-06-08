@@ -48,9 +48,9 @@ Output MUST be a valid JSON object with ONLY these keys:
             profile["csv_path"] = csv_path
             
             # Basic stats
-            profile["num_rows"] = df.shape[0]
-            profile["num_cols"] = df.shape[1]
-            profile["missing_values"] = df.isnull().sum().sum()
+            profile["num_rows"] = int(df.shape[0])
+            profile["num_cols"] = int(df.shape[1])
+            profile["missing_values"] = int(df.isnull().sum().sum())
             
             print(f"[DataAgent] Detected Target: '{profile.get('target_column')}' ({profile.get('problem_type')})")
             return profile

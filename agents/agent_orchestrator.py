@@ -32,7 +32,7 @@ class AgenticAutoMLOrchestrator:
         }
         return report
 
-    def run_pipeline(self, csv_path: str):
+    def run_pipeline(self, csv_path: str, force_run: bool = False):
         print(f"\\n{'='*50}\\n🚀 STARTING AGENTIC AUTOML PIPELINE\\n{'='*50}")
         
         # Step 1: Data Understanding
@@ -66,20 +66,27 @@ class AgenticAutoMLOrchestrator:
             X = df.drop(columns=[profile.get('target_column')])
             raw_vec = compute_dataset_embedding(X, y)
             
-            # Note: We should ideally encode this with Task Encoder to get 32D, but for this step we will
-            # simulate passing it to the model agent.
-            similar_datasets = []
+            # We need to encode the 10D raw vector into 32D using the Task Encoder
+            from task_encoder import encode_dataset, load_encoder
+            import numpy as np
+            try:
+                encoder = load_encoder("task_encoder.pt")
+                query_embedding = encode_dataset(raw_vec, encoder).reshape(1, -1).astype(np.float32)
+            except Exception as e:
+                print(f"[Orchestrator] Failed to load encoder, falling back to empty memory: {e}")
+                query_embedding = None
             
-            # Simple retrieval strategy for agent context
-            distances, indices = self.memory.search(raw_vec, top_k=3)
-            for idx in indices[0]:
-                if idx != -1:
-                    r = self.memory.records[idx]
-                    similar_datasets.append({
-                        "id": r.dataset_id,
-                        "best_model": r.models[0] if r.models else "unknown",
-                        "score": 0.0 # Placeholder
-                    })
+            similar_datasets = []
+            if query_embedding is not None and self.memory._index is not None:
+                dists, idxs = self.memory._index.search(query_embedding, 3)
+                for idx in idxs[0]:
+                    if idx != -1:
+                        r = self.memory.records[idx]
+                        similar_datasets.append({
+                            "id": r.dataset_id,
+                            "best_model": r.models[0] if r.models else "unknown",
+                            "score": 0.0 # Placeholder
+                        })
         except Exception as e:
             print(f"[Orchestrator] Memory search failed: {e}")
             similar_datasets = []
@@ -90,7 +97,12 @@ class AgenticAutoMLOrchestrator:
         final_critique = self.critic_agent.validate_full_pipeline(profile, features, model_recommendations)
         if not final_critique.get("approved"):
             print(f"⚠️ Warning from Critic Agent: {final_critique.get('feedback')}")
-            
+            if not force_run:
+                print("🛑 Pipeline halted by Critic Agent. Fix the issues or use force_run=True.")
+                return None
+            else:
+                print(" 🚀 FORCE RUN enabled. Bypassing Critic rejection and starting training...")
+                final_critique['approved'] = True  # Override so the downstream trigger runs
         # Step 7: Generate Report
         report = self.generate_consultant_report(profile, requirements, features, model_recommendations)
         
