@@ -115,12 +115,15 @@ def generate_comprehensive_report(master_context, dataset_id):
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(report_md)
 
-    # Log to W&B
-    try:
-        wandb.log({
-            f"consultant_report/{dataset_id}": wandb.Html(f"<pre style='white-space: pre-wrap; font-family: sans-serif;'>{report_md}</pre>")
-        })
-    except Exception as e:
-        print(f"  [W&B] Failed to log consultant report: {e}")
+    # Log to W&B (only if an active run exists)
+    if wandb.run is not None:
+        try:
+            wandb.log({
+                f"consultant_report/{dataset_id}": wandb.Html(f"<pre style='white-space: pre-wrap; font-family: sans-serif;'>{report_md}</pre>")
+            })
+        except Exception as e:
+            print(f"  [W&B] Failed to log consultant report: {e}")
+    else:
+        print("  [W&B] Skipped logging report (No active W&B run).")
 
     return report_md

@@ -260,7 +260,17 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
             y_train_numpy = np.array(y)
             
             optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+            # ─── Warm-start NAS from SQLite DL history ───────────────────────
+            try:
+                from dl_memory import warm_start_from_memory
+                prior_params = warm_start_from_memory(modality)
+            except Exception:
+                prior_params = None
+
             nas_study = optuna.create_study(direction='maximize', study_name=f"nas_mlp_{did}")
+            if prior_params:
+                nas_study.enqueue_trial(prior_params)
             nas_study.optimize(
                 lambda trial: objective_nas(trial, X_train_numpy, y_train_numpy, problem_type, device, w1_def, w2_def, w3_def), 
                 n_trials=10 
@@ -316,16 +326,34 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
 
             optimizer_f = torch.optim.Adam(final_model.parameters(), lr=best_dl_params['dl_lr'])
             criterion_f = torch.nn.CrossEntropyLoss() if is_clf else torch.nn.MSELoss()
+
+            # Split out a validation set from the training fold for early stopping
+            from sklearn.model_selection import train_test_split as _tts
+            X_tr, X_val_f, y_tr, y_val_f = _tts(
+                X_train_f, y_train_f, test_size=0.2, random_state=42,
+                stratify=y_train_f if is_clf else None
+            )
+            X_tr_t  = torch.tensor(X_tr,    dtype=torch.float32).to(device)
+            y_tr_t  = torch.tensor(y_tr,    dtype=torch.long if is_clf else torch.float32).to(device)
+            X_val_t = torch.tensor(X_val_f, dtype=torch.float32).to(device)
+            y_val_t = torch.tensor(y_val_f, dtype=torch.long if is_clf else torch.float32).to(device)
+
             train_loader_f = DataLoader(
-                TensorDataset(X_train_t, y_train_t),
+                TensorDataset(X_tr_t, y_tr_t),
                 batch_size=best_dl_params['dl_batch_size'],
                 shuffle=True
             )
 
-            # Train for 50 epochs (production quality)
-            final_epochs = 50
-            final_model.train()
+            # ── Early-Stopping Training (max 50 epochs, patience=5) ──────────
+            final_epochs  = 50
+            patience      = 5
+            best_val_loss = float('inf')
+            patience_ctr  = 0
+            best_state    = None
+
             for epoch in range(final_epochs):
+                # --- Train ---
+                final_model.train()
                 epoch_loss = 0.0
                 for batch_x, batch_y in train_loader_f:
                     optimizer_f.zero_grad()
@@ -333,8 +361,33 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
                     loss.backward()
                     optimizer_f.step()
                     epoch_loss += loss.item()
+
+                # --- Validate ---
+                final_model.eval()
+                with torch.no_grad():
+                    val_out  = final_model(X_val_t)
+                    val_loss = criterion_f(val_out, y_val_t).item()
+
                 if (epoch + 1) % 10 == 0:
-                    print(f"  Epoch {epoch+1}/{final_epochs} | Loss: {epoch_loss/len(train_loader_f):.4f}")
+                    print(f"  Epoch {epoch+1}/{final_epochs} | "
+                          f"Train Loss: {epoch_loss/len(train_loader_f):.4f} | "
+                          f"Val Loss: {val_loss:.4f}")
+
+                # --- Early stopping check ---
+                if val_loss < best_val_loss:
+                    best_val_loss = val_loss
+                    best_state    = {k: v.cpu().clone() for k, v in final_model.state_dict().items()}
+                    patience_ctr  = 0
+                else:
+                    patience_ctr += 1
+                    if patience_ctr >= patience:
+                        print(f"  ⏹ Early stopping triggered at epoch {epoch+1} "
+                              f"(val loss hasn't improved for {patience} epochs).")
+                        break
+
+            # Restore best weights
+            if best_state:
+                final_model.load_state_dict({k: v.to(device) for k, v in best_state.items()})
 
             # Evaluate on held-out test set
             final_model.eval()
@@ -356,6 +409,18 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
             conf_matrix = confusion_matrix(y_true_np, y_pred_np)
             print("\n🔥 CONFUSION MATRIX:")
             print(conf_matrix)
+
+            # ─── Save to SQLite DL Memory ────────────────────────────────────
+            try:
+                from dl_memory import save_dl_result
+                save_dl_result(
+                    dataset_name=str(did),
+                    modality=modality,
+                    best_params=best_dl_params,
+                    final_accuracy=float(final_acc) if final_acc is not None else 0.0
+                )
+            except Exception as mem_err:
+                print(f"  [DL Memory] Failed to save: {mem_err}")
 
             # ─── LLM Consultant Report ───────────────────────────────────────
             dl_context = {
