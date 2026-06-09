@@ -351,9 +351,45 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
 
             print(f"\n✅ FINAL TEST ACCURACY: {final_acc * 100:.2f}%" if is_clf else "")
             print("\n📊 CLASSIFICATION REPORT:")
-            print(classification_report(y_true_np, y_pred_np, target_names=class_names))
+            clf_report_str = classification_report(y_true_np, y_pred_np, target_names=class_names)
+            print(clf_report_str)
+            conf_matrix = confusion_matrix(y_true_np, y_pred_np)
             print("\n🔥 CONFUSION MATRIX:")
-            print(confusion_matrix(y_true_np, y_pred_np))
+            print(conf_matrix)
+
+            # ─── LLM Consultant Report ───────────────────────────────────────
+            dl_context = {
+                "paradigm_routing": {
+                    "decision": "AutoDL",
+                    "R_D_score": r_d_score,
+                    "modality": modality,
+                    "extractor_used": "CLIP" if modality in ["vision", "video"] else
+                                      "SentenceTransformer" if modality == "text" else
+                                      "Librosa MFCC"
+                },
+                "dataset": {
+                    "id": did,
+                    "n_samples": int(X_pca.shape[0]),
+                    "n_features_after_pca": int(X_pca.shape[1]),
+                    "n_classes": int(out_dim),
+                    "class_names": class_names
+                },
+                "nas_results": {
+                    "best_architecture": best_dl_params,
+                    "best_dl_utility": round(float(nas_study.best_value), 4)
+                },
+                "final_performance": {
+                    "test_accuracy": round(float(final_acc), 4) if final_acc is not None else None,
+                    "classification_report": clf_report_str,
+                    "confusion_matrix": conf_matrix.tolist()
+                }
+            }
+
+            try:
+                from llm_explainer import generate_comprehensive_report
+                generate_comprehensive_report(dl_context, did)
+            except Exception as report_err:
+                print(f"  [LLM Report] Failed to generate AutoDL report: {report_err}")
             
         except Exception as e:
             print(f"  [AutoDL NAS] Failed: {e}")

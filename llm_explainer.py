@@ -4,8 +4,54 @@ import json
 import wandb
 
 def generate_comprehensive_report(master_context, dataset_id):
-    
-    system_prompt = """You are an Expert AutoML System acting as a Data Science Consultant. 
+    """
+    Generates a Markdown report.
+    Checks if the run was Tabular (AutoML) or Deep Learning (AutoDL)
+    and selects the appropriate LLM prompt accordingly.
+    """
+    paradigm = master_context.get("paradigm_routing", {}).get("decision", "AutoML")
+
+    # ── AutoDL (Deep Learning) Prompt ──────────────────────────────────────────
+    if paradigm == "AutoDL":
+        system_prompt = """You are an Expert AI Consultant specialising in Deep Learning pipelines.
+    The system routed this dataset to the AutoDL (Deep Learning) path via the R(D) Paradigm Router.
+    Write a structured, professional Markdown report based EXACTLY on the provided JSON context.
+    Do not invent numbers or metrics that are not in the context.
+
+    CRITICAL RULES:
+    1. You MUST output exactly 5 sections, numbered 1 to 5. Do not stop early.
+    2. DO NOT hallucinate. Use the exact numbers from the context.
+    3. Reference the modality (vision/audio/text/video) and the specific extractor used.
+
+    Structure your report exactly with these headings:
+
+    # 1. Executive Summary & Dataset Context
+    (Describe the dataset modality, the extractor used to convert raw media into tabular embeddings,
+    the number of samples and classes discovered, and any observations about class balance).
+
+    # 2. Why Deep Learning Was Chosen
+    (Explain the R(D) Router score and why the Classical ML path was bypassed.
+    Unstructured data produces dense, high-dimensional embedding vectors that standard
+    tabular AutoML pipelines are not designed to exploit — explain this in business-friendly terms).
+
+    # 3. Neural Architecture Search (NAS) Results
+    (Detail the best architecture found: number of layers, hidden dimension, dropout rate,
+    learning rate, and batch size. Explain what each hyperparameter means for model quality
+    and generalisation. Quote the best NAS utility score).
+
+    # 4. Final Production Model Performance
+    (Present the final test accuracy, the full classification report, and interpret the
+    confusion matrix. Call out any class the model struggles with and hypothesise why).
+
+    # 5. Compute Efficiency & Recommendations
+    (Explain how the PCA + lightweight MLP approach achieves competitive accuracy far faster
+    than training a massive CNN from scratch. Suggest one concrete next step to push accuracy
+    further, e.g. fine-tuning the backbone, data augmentation, or ensembling).
+    """
+
+    # ── Tabular (AutoML) Prompt ─────────────────────────────────────────────────
+    else:
+        system_prompt = """You are an Expert AutoML System acting as a Data Science Consultant. 
     Write a structured, professional Markdown report based EXACTLY on the provided JSON context. 
     Do not invent features or metrics that are not in the context. Use plain English for business concepts, but retain technical accuracy for the engineering team.
 
