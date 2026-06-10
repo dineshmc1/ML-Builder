@@ -49,7 +49,7 @@ def sanitize_filename(dataset_id_or_path):
     safe_name = re.sub(r'[\\/*?:"<>|]', '_', os.path.splitext(base)[0])
     return safe_name
 
-def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local", validate=False, modality="tabular"):
+def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local", validate=False, modality="tabular", config=None):
     import numpy as np
     from wandb_logger import log
     
@@ -243,6 +243,23 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
             MEMORY_META_PATH  = "memory_store.pkl"
             store.save_index(MEMORY_INDEX_PATH, MEMORY_META_PATH)
             print("✅ Run successfully added to FAISS Memory Store!")
+
+            # ─── Advanced Notebook Generator ─────────────────────────────────
+            try:
+                from notebook_generator import generate_advanced_notebook
+                if full_search_best_model_name not in ["NONE", "FAILED"]:
+                    results_dict = {
+                        "X": X, "y": y, "y_test": None, "y_pred": None, # Test metrics aren't neatly localized here without re-evaluating
+                        "final_accuracy": best_params.get("utility_score", 0),
+                        "paradigm": "AutoML",
+                        "modality": "tabular"
+                    }
+                    nb_path = f"reports/{did}_advanced_analysis.ipynb"
+                    if config:
+                        generate_advanced_notebook(config, results_dict, nb_path)
+            except Exception as nb_err:
+                print(f"  [Notebook Generator] Failed: {nb_err}")
+
             
     elif paradigm_decision == "AutoDL":
         print("\n🧠 Executing AutoDL NAS Pipeline...")
@@ -455,6 +472,22 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
                 generate_comprehensive_report(dl_context, did)
             except Exception as report_err:
                 print(f"  [LLM Report] Failed to generate AutoDL report: {report_err}")
+
+            # ─── Advanced Notebook Generator ─────────────────────────────────
+            try:
+                from notebook_generator import generate_advanced_notebook
+                results_dict = {
+                    "X": X_test_f, "y": y_test_f, "y_test": y_true_np, "y_pred": y_pred_np,
+                    "final_accuracy": final_acc,
+                    "paradigm": "AutoDL",
+                    "modality": modality
+                }
+                nb_path = f"reports/{did}_advanced_analysis.ipynb"
+                if config:
+                    generate_advanced_notebook(config, results_dict, nb_path)
+            except Exception as nb_err:
+                print(f"  [Notebook Generator] Failed: {nb_err}")
+
             
         except Exception as e:
             print(f"  [AutoDL NAS] Failed: {e}")
@@ -496,44 +529,43 @@ def main():
     
     user_input = input("Enter path to dataset (CSV file OR Image/Audio/Text Folder): ").strip()
     
+    from onboarding_agent import OnboardingAgent
+    agent = OnboardingAgent()
+    config = agent.run(user_input)
+    
+    if not config:
+        print("❌ Failed to process input. Exiting.")
+        return
+        
+    modality = config['modality']
+    
     # ==========================================
     # PATH A: MULTI-MODAL (FOLDERS)
     # ==========================================
-    if os.path.isdir(user_input):
-        print(f"\n📂 Detected Directory: {user_input}")
+    if modality in ['vision', 'text', 'audio', 'video']:
         print("🚀 Bypassing Agentic DataAgent. Routing to Multi-Modal Embedder...")
         
-        from modality_router import ModalityRouter
         from multimodal_extractor import UniversalEmbedder
         
-        router = ModalityRouter(user_input)
-        modality = router.get_modality()
-        print(f"🔍 Modality Detected: {modality.upper()}")
+        embedder = UniversalEmbedder(device=device, batch_size=32, domain=config['domain'])
+        X, y = embedder.embed_directory(user_input, modality)
         
-        if modality in ['vision', 'text', 'audio', 'video']:
-            embedder = UniversalEmbedder(device=device, batch_size=32)
-            X, y = embedder.embed_directory(user_input, modality)
-            
-            print(f"✅ Embedding Extraction Complete! Shape: {X.shape}")
-            
-            problem_type = 'classification'
-            run_single_dataset_pipeline(
-                X, y, problem_type, store, encoder, 
-                did=os.path.basename(user_input), 
-                validate=args.validate,
-                modality=modality
-            )
-            return
-        else:
-            print("❌ Unknown modality. Please check folder contents.")
-            return
+        print(f"✅ Embedding Extraction Complete! Shape: {X.shape}")
+        
+        problem_type = 'classification'
+        run_single_dataset_pipeline(
+            X, y, problem_type, store, encoder, 
+            did=os.path.basename(user_input), 
+            validate=args.validate,
+            modality=modality,
+            config=config
+        )
+        return
 
     # ==========================================
     # PATH B: TABULAR (CSV FILES)
     # ==========================================
-    elif os.path.isfile(user_input) and user_input.endswith('.csv'):
-        print(f"\n📄 Detected CSV File: {user_input}")
-        
+    elif modality == 'tabular':
         try:
             use_agentic = input("Use Agentic AutoML pipeline? (y/n): ").strip().lower() == 'y'
         except EOFError:
@@ -556,22 +588,15 @@ def main():
                 target_column = result['profile'].get('target_column')
                 X, y, problem_type = load_local_dataset(user_input, target_column)
                 if X is not None:
-                    run_single_dataset_pipeline(X, y, problem_type, store, encoder, did=user_input, validate=args.validate)
+                    run_single_dataset_pipeline(X, y, problem_type, store, encoder, did=os.path.basename(user_input), validate=args.validate, config=config)
             else:
                 print("🛑 Agentic pipeline halted. Exiting.")
                 return
         else:
-            from onboarding_agent import run_onboarding_cli
-            config = run_onboarding_cli(user_input)
-            if config:
-                target_column = config.get("target_column")
-                X, y, problem_type = load_local_dataset(user_input, target_column)
-                if X is not None:
-                    run_single_dataset_pipeline(X, y, problem_type, store, encoder, did=user_input, validate=args.validate)
-            
-    else:
-        print("❌ Error: Invalid path. Please provide a valid CSV file or a dataset folder.")
-        return
+            target_column = config.get("target_column")
+            X, y, problem_type = load_local_dataset(user_input, target_column)
+            if X is not None:
+                run_single_dataset_pipeline(X, y, problem_type, store, encoder, did=os.path.basename(user_input), validate=args.validate, config=config)
 
 if __name__ == "__main__":
     main()

@@ -22,9 +22,10 @@ else:
 warnings.filterwarnings('ignore')
 
 class UniversalEmbedder:
-    def __init__(self, device='cpu', batch_size=32):
+    def __init__(self, device='cpu', batch_size=32, domain='general'):
         self.device = device
         self.batch_size = batch_size
+        self.domain = domain
         
         # Lazy loading of models to save memory
         self.vision_model = None
@@ -36,6 +37,16 @@ class UniversalEmbedder:
         Scans a directory (assuming subfolders are class labels),
         extracts embeddings, applies PCA, and returns X (DataFrame) and y (Series).
         """
+        # --- NEW: AUTO-DETECT TRAIN/TEST SPLITS ---
+        root_dirs = [d for d in os.listdir(data_path) if os.path.isdir(os.path.join(data_path, d))]
+        # If the folder contains standard ML split names, automatically dive into 'train'
+        if set(['train', 'test', 'val']).intersection(set([d.lower() for d in root_dirs])):
+            train_path = os.path.join(data_path, 'train')
+            if os.path.exists(train_path):
+                print(f"[Embedder] Detected Train/Test split structure. Automatically routing to: {train_path}")
+                data_path = train_path
+        # --------------------------------------------
+
         print(f"[UniversalEmbedder] Starting extraction for modality: {modality.upper()}")
         
         # Find all files and their class labels (subfolder names)
@@ -109,10 +120,17 @@ class UniversalEmbedder:
         import torch
         
         if self.vision_model is None:
-            from transformers import CLIPProcessor, CLIPModel
-            print("\n[UniversalEmbedder] Loading CLIP model...")
-            self.vision_processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
-            self.vision_model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32").to(self.device)
+            from transformers import AutoProcessor, AutoModel
+            from domain_registry import get_vision_model_config
+            
+            cfg = get_vision_model_config(self.domain, "clip")
+            model_id = cfg["model_id"]
+            
+            print(f"\\n[UniversalEmbedder] Loading domain-specific vision model ({self.domain}): {model_id}...")
+            
+            # Using AutoProcessor / AutoModel to handle diverse architectures (CLIP, BEiT, TrOCR)
+            self.vision_processor = AutoProcessor.from_pretrained(model_id)
+            self.vision_model = AutoModel.from_pretrained(model_id).to(self.device)
             self.vision_model.eval()
             
         images = []
@@ -124,7 +142,13 @@ class UniversalEmbedder:
                 # Fallback to a blank image
                 images.append(Image.new("RGB", (224, 224), (0, 0, 0)))
                 
-        inputs = self.vision_processor(images=images, return_tensors="pt", padding=True).to(self.device)
+        # TrOCR processor expects 'images', while others might expect 'images' or 'pixel_values'
+        # AutoProcessor handles this mostly, but we use 'images' explicitly
+        inputs = self.vision_processor(images=images, return_tensors="pt")
+        # Padding might be required depending on the exact processor
+        if hasattr(self.vision_processor, 'pad'):
+             inputs = self.vision_processor.pad(inputs, return_tensors="pt")
+        inputs = inputs.to(self.device)
         
         with torch.no_grad():
             # Use get_image_features to only run the vision tower (avoids input_ids error)
