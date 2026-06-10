@@ -39,14 +39,7 @@ class OnboardingAgent:
         print(f"🔍 Detected Modality: {modality.upper()} | Source: {'Folder' if is_folder else 'File'}")
 
         # 2. LLM Prompt for Business & Domain Context
-        system_prompt = f"""You are a Senior Data Analyst & MLOps Engineer. 
-        A user is uploading a {modality} dataset. Ask 3 strategic questions to understand:
-        1. Business Objective & Success Metric
-        2. Domain Context (If {modality} != 'tabular', ask: "Which domain? general, biology, remote_sensing, documents")
-        3. Constraints (Latency, Interpretability, Fairness)
-        
-        Output ONLY valid JSON:
-        {{"business_objective": "...", "success_metric": "...", "domain": "...", "constraints": "..."}}"""
+        system_prompt = """You are a Senior Data Analyst. The user is uploading a """ + modality + """ dataset. \n        The user will provide a brief business goal. You must extract the intent and fill the JSON.\n        If the user didn't specify a domain, default to 'general'.\n        \n        Output ONLY valid JSON:\n        {"business_objective": "string", "success_metric": "string", "domain": "general/biology/remote_sensing/documents", "constraints": "string"}"""
 
         messages = [{"role": "system", "content": system_prompt}]
         
