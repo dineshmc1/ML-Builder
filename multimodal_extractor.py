@@ -55,7 +55,7 @@ class UniversalEmbedder:
         for root, _, filenames in os.walk(data_path):
             label = os.path.basename(root)
             if root == data_path:
-                label = 'unknown' # Files in root dir
+                label = 'unknown'  # Files in root dir
                 
             for f in filenames:
                 # Basic filter for valid extensions
@@ -73,35 +73,47 @@ class UniversalEmbedder:
             
         print(f"[UniversalEmbedder] Found {len(files)} files across {len(set(labels))} classes.")
         
-        embeddings = []
+        all_embeddings = []
+        valid_labels = []
         
         # Process in batches
         for i in tqdm(range(0, len(files), self.batch_size), desc=f"Extracting {modality} embeddings"):
             batch_files = files[i:i+self.batch_size]
+            batch_labels = labels[i:i+self.batch_size]
             
             if modality == 'vision':
                 batch_emb = self._process_vision_batch(batch_files)
+                all_embeddings.append(batch_emb)
+                valid_labels.extend(batch_labels)
             elif modality == 'text':
                 batch_emb = self._process_text_batch(batch_files)
+                all_embeddings.append(batch_emb)
+                valid_labels.extend(batch_labels)
             elif modality == 'audio':
-                batch_emb = self._process_audio_batch(batch_files)
+                # Audio returns (embeddings, valid_labels) after skipping corrupted files
+                batch_emb, kept_labels = self._process_audio_batch(batch_files, batch_labels)
+                if len(batch_emb) > 0:
+                    all_embeddings.append(batch_emb)
+                    valid_labels.extend(kept_labels)
             elif modality == 'video':
                 batch_emb = self._process_video_batch(batch_files)
+                all_embeddings.append(batch_emb)
+                valid_labels.extend(batch_labels)
             else:
                 raise ValueError(f"Unsupported modality: {modality}")
-                
-            embeddings.append(batch_emb)
-            
+        
+        if not all_embeddings:
+            raise ValueError("All audio files were corrupted or unsupported. No embeddings extracted.")
+
         # Combine all batches
-        X_raw = np.vstack(embeddings)
-        y = pd.Series(labels)
+        X_raw = np.vstack(all_embeddings)
+        y = pd.Series(valid_labels)
         
-        print(f"[UniversalEmbedder] Raw embeddings shape: {X_raw.shape}")
+        print(f"[UniversalEmbedder] Raw embeddings shape: {X_raw.shape} | Labels: {len(y)}")
         
-        # PCA Dimensionality Reduction
-        # Audio MFCCs are already small (~40), so we only reduce large embeddings
+        # PCA Dimensionality Reduction (skip for small dims like MFCC ~40)
         if X_raw.shape[1] > 100:
-            n_components = min(100, X_raw.shape[0]) # Can't have more components than samples
+            n_components = min(100, X_raw.shape[0])  # Can't have more components than samples
             print(f"[UniversalEmbedder] Applying PCA to reduce dimensions from {X_raw.shape[1]} to {n_components}...")
             pca = PCA(n_components=n_components, random_state=42)
             X_reduced = pca.fit_transform(X_raw)
@@ -186,31 +198,67 @@ class UniversalEmbedder:
         embeddings = self.text_model.encode(texts, batch_size=self.batch_size, show_progress_bar=False)
         return embeddings
 
-    def _process_audio_batch(self, file_paths):
-        import librosa
-        batch_emb = []
+    def _process_audio_batch(self, file_paths, batch_labels):
+        """Processes a batch of audio files using AST (527-dim).
         
-        for path in file_paths:
+        Skips corrupted/unsupported files entirely instead of falling back
+        to MFCC — this prevents dimension mismatches in np.vstack downstream.
+        Returns a tuple of (embeddings_array, valid_labels) so the caller
+        can keep labels in sync with the kept embeddings.
+        """
+        batch_emb = []
+        valid_labels = []
+        
+        for file_path, label in zip(file_paths, batch_labels):
             try:
-                # Load audio, resample to 22050Hz, max 30 seconds to avoid memory spikes
-                y, sr = librosa.load(path, sr=22050, duration=30.0)
-                
-                if len(y) == 0:
-                    batch_emb.append(np.zeros(40))
-                    continue
-                    
-                # Extract 40 MFCCs
-                mfccs = librosa.feature.mfcc(y=y, sr=sr, n_mfcc=40)
-                
-                # Average across the time axis to get a 1D vector per file
-                mfccs_mean = np.mean(mfccs.T, axis=0)
-                batch_emb.append(mfccs_mean)
-                
+                emb = self.extract_audio_embeddings_transformer(file_path)
+                batch_emb.append(emb)
+                valid_labels.append(label)
             except Exception as e:
-                print(f"Error processing audio {path}: {e}")
-                batch_emb.append(np.zeros(40))
-                
-        return np.vstack(batch_emb)
+                # Skip the file entirely — DO NOT fall back to MFCC,
+                # or the resulting array will have mismatched dimensions.
+                print(f"  [Audio] Skipping corrupted/unsupported file: {os.path.basename(file_path)} ({e})")
+        
+        # If the whole batch was corrupted, return empty arrays
+        if not batch_emb:
+            return np.array([]), []
+        
+        # Stack only the successful 527-dim embeddings
+        return np.vstack(batch_emb), valid_labels
+
+    def extract_audio_embeddings_transformer(self, audio_path):
+        """Use Audio Spectrogram Transformer (AST) instead of MFCCs.
+        
+        Returns a 527-dim embedding from the AST logit space, which captures
+        rich AudioSet-level acoustic semantics far beyond hand-crafted MFCCs.
+        The model is lazy-loaded and cached on self to avoid repeated I/O.
+        """
+        import torch
+        import librosa
+        from transformers import AutoFeatureExtractor, ASTForAudioClassification
+
+        _MODEL_NAME = "MIT/ast-finetuned-audioset-10-10-0.4593"
+
+        # Lazy-load and cache on the instance so we only download once per run
+        if not hasattr(self, "_ast_extractor") or self._ast_extractor is None:
+            print(f"\n[UniversalEmbedder] Loading AST model: {_MODEL_NAME} ...")
+            self._ast_extractor = AutoFeatureExtractor.from_pretrained(_MODEL_NAME)
+            self._ast_model = ASTForAudioClassification.from_pretrained(_MODEL_NAME).to(self.device)
+            self._ast_model.eval()
+
+        # Load audio — AST was trained on 16 kHz, 5-second clips
+        y, sr = librosa.load(audio_path, sr=16000, duration=5)
+
+        # Extract spectrogram features
+        inputs = self._ast_extractor(y, sampling_rate=sr, return_tensors="pt", padding=True)
+        inputs = {k: v.to(self.device) for k, v in inputs.items()}
+
+        # Forward pass — use logits as the embedding (527 AudioSet classes)
+        with torch.no_grad():
+            outputs = self._ast_model(**inputs)
+            embedding = outputs.logits.squeeze().cpu().numpy()
+
+        return embedding  # shape: (527,)
 
     def _process_video_batch(self, file_paths):
         import cv2
