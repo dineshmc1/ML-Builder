@@ -9,7 +9,7 @@ from data_loader import detect_problem_type
 from data_cleaner import clean
 from feature_processing import build_preprocessor
 from model_trainer import get_models, baseline_screen
-from cold_start import MemoryStore
+from cold_start import MemoryStore, _cosine_similarity, compute_adaptive_threshold
 from config import USE_LLM, USE_WANDB
 
 DATASET_IDS = [
@@ -131,7 +131,9 @@ def load_and_preprocess_openml(dataset_id):
         print(f"  -> Failed to load dataset {dataset_id}: {e}")
         return None, None
 
-            
+
+def load_and_preprocess_local(data, target_column):
+    try:
         y = data[target_column]
         X = data.drop(columns=[target_column])
         
