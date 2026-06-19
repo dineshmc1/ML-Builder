@@ -278,12 +278,42 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
             
             optuna.logging.set_verbosity(optuna.logging.WARNING)
 
-            # ─── Warm-start NAS from SQLite DL history ───────────────────────
+            # ─── Warm-start NAS from Modality-Specific FAISS ─────────────────
+            query_embedding = None
+            dl_memory = None
+            prior_params = None
             try:
-                from dl_memory import warm_start_from_memory
-                prior_params = warm_start_from_memory(modality)
-            except Exception:
-                prior_params = None
+                from sklearn.decomposition import PCA
+                from sklearn.preprocessing import StandardScaler
+                from dl_faiss_memory import ModalityFAISSMemory
+                
+                # Compute 100D embedding (after PCA)
+                scaler_warm = StandardScaler()
+                X_scaled_warm = scaler_warm.fit_transform(X_train_numpy)
+                n_comp = min(100, X_scaled_warm.shape[1], X_scaled_warm.shape[0])
+                pca_warm = PCA(n_components=n_comp)
+                X_pca_warm = pca_warm.fit_transform(X_scaled_warm)
+                
+                if X_pca_warm.shape[1] < 100:
+                    pad_width = 100 - X_pca_warm.shape[1]
+                    X_pca_warm = np.pad(X_pca_warm, ((0, 0), (0, pad_width)), mode='constant')
+                
+                query_embedding = X_pca_warm[0]  # Use first sample as representative
+                
+                # Initialize modality-specific FAISS
+                dl_memory = ModalityFAISSMemory(modality)
+                
+                # Search for similar past datasets
+                similar_results = dl_memory.search(query_embedding, top_k=3)
+                
+                if similar_results:
+                    print(f"  [DL Memory] 🧠 Found {len(similar_results)} similar {modality} datasets")
+                    # Use best params from most similar dataset
+                    prior_params = similar_results[0]['best_params']
+                else:
+                    print(f"  [DL Memory] No similar {modality} datasets found. Starting cold.")
+            except Exception as e:
+                print(f"  [DL Memory] Failed to warm-start from FAISS: {e}")
 
             nas_study = optuna.create_study(direction='maximize', study_name=f"nas_mlp_{did}")
             if prior_params:
@@ -427,17 +457,20 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
             print("\n🔥 CONFUSION MATRIX:")
             print(conf_matrix)
 
-            # ─── Save to SQLite DL Memory ────────────────────────────────────
+            # ─── Save to Modality-Specific FAISS ─────────────────────────────
             try:
-                from dl_memory import save_dl_result
-                save_dl_result(
-                    dataset_name=str(did),
-                    modality=modality,
-                    best_params=best_dl_params,
-                    final_accuracy=float(final_acc) if final_acc is not None else 0.0
-                )
+                if dl_memory is not None and query_embedding is not None:
+                    dl_memory.add(
+                        embedding_100d=query_embedding,
+                        dataset_name=str(did),
+                        best_params=best_dl_params,
+                        accuracy=float(final_acc) if final_acc is not None else 0.0
+                    )
+                    print(f"  [DL Memory] Successfully saved to modality-specific FAISS index.")
+                else:
+                    print(f"  [DL Memory] Could not save: dl_memory or query_embedding is missing.")
             except Exception as mem_err:
-                print(f"  [DL Memory] Failed to save: {mem_err}")
+                print(f"  [DL Memory] Failed to save to FAISS: {mem_err}")
 
             # ─── LLM Consultant Report ───────────────────────────────────────
             dl_context = {
