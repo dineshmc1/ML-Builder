@@ -225,24 +225,59 @@ All CLI arguments can also be set in `config.json`. CLI arguments take precedenc
 
 ---
 
-## Pipeline Steps
+## System Architecture
 
-The pipeline executes these steps in order:
+ML-Builder is designed around a highly modular, multimodal, and adaptive architecture.
 
-```
-STEP 1  Load dataset         → CSV/Excel, auto-detect problem type, split 80/20
-STEP 2  Clean data            → Remove duplicates, impute missing values
-[Memory]Adaptive Cold-Start   → Check FAISS memory for similar datasets; if matched, skip broad screening
-[Engine]Resource Analysis     → Analyze dataset size/constraints, cap OH encoding, select model tier
-STEP 3  Smart Feature Eng.    → (Optional) Outliers, log transforms, interactions, encoding maps
-STEP 4  Feature processing    → StandardScaler (numeric) + Target/Freq/OneHot Encoders
-STEP 5  Baseline screening    → Train selected models on subsample, drop underperformers
-STEP 6  Full training         → Train promising models on full training set
-STEP 7  Evaluation            → Test-set metrics, select best model, save outputs
-STEP 8  EDA (--report)        → Summary stats, distribution plots, correlation heatmap
-STEP 9  Explainability        → Feature importance + SHAP plots, generate HTML report
-        (--report)
-```
+1. **Orchestrator & Modality Router**: The pipeline entry point automatically detects the data type (Tabular, Vision, Audio, Text) and routes it to the correct subsystem.
+2. **Adaptive Resource Manager**: A dynamic control unit that analyzes data footprint and system constraints, proactively capping memory-intensive operations (like excessive One-Hot Encoding or deep Cross-Validation) to prevent Out-Of-Memory (OOM) errors.
+3. **Smart Feature Engine**: An intelligent processing layer for tabular data that performs conditional data cleaning, outlier capping, skewness correction (log-transforms), and cardinality-aware encoding.
+4. **Meta-Learning Memory (Phase 4)**: A hybrid FAISS/SQLite memory database that stores dataset embeddings and their best-performing hyperparameter configurations.
+5. **Domain Registry (Deep Learning)**: For non-tabular modalities (e.g., Vision), it selects domain-optimized foundation models (e.g., BioCLIP for biology, TrOCR for documents) to extract robust embeddings.
+6. **Training & Auto-Tuning Engine**: Screens baseline models, drops underperformers, and fully trains the top candidates. Capable of warm-starting Neural Architecture Search (NAS) using the Meta-Learning Memory.
+7. **Explainability & Reporting**: Generates interactive Exploratory Data Analysis (EDA), SHAP feature importance plots, and bundles everything into a shareable HTML report.
+
+---
+
+## How It Works (Step-by-Step)
+
+The pipeline executes a highly adaptive workflow, conditionally altering its path based on the dataset's characteristics and available system memory.
+
+### 1. Data Ingestion & Routing
+- Loads the dataset and automatically detects the modality (Tabular, Vision, Audio, Text).
+- Identifies the problem type (Classification vs. Regression).
+- Generates a stratified train/test split.
+
+### 2. Resource Analysis & Constraint Mapping
+- The **Resource Manager** analyzes the dataset's footprint.
+- It sets hard limits on feature engineering depth and cross-validation folds based on available system memory, categorizing the dataset as *Small*, *Medium*, or *Large*.
+
+### 3. Meta-Learning Memory Lookup (Adaptive Cold-Start)
+- Computes a mathematical "fingerprint" (meta-feature embedding vector) of the dataset.
+- Queries the **FAISS Memory Store** for similar historical datasets.
+- If a strong match is found, the system "warm-starts" by retrieving the best past models and hyperparameters, bypassing the broad baseline search.
+
+### 4. Intelligent Feature Engineering
+- **Data Cleaning**: Removes duplicates and imputes missing values (median for numeric, mode for categorical).
+- **Transformations**: Conditionally applies log-transforms for skewed data, caps outliers, and limits high-cardinality categorical variables.
+- **Feature Processing**: Standardizes numeric features and applies Target, Frequency, or One-Hot encoding based on the Resource Manager's budget constraints.
+
+### 5. Baseline Model Screening
+- Trains a suite of models (Linear, Random Forest, XGBoost, LightGBM, etc.) on a subsample of the data.
+- Drops models scoring in the bottom percentile to save computational time.
+
+### 6. Full Training & Hyperparameter Tuning
+- Fully trains the most promising models on the complete training set.
+- If enabled, performs hyperparameter tuning (Randomized or Grid Search). 
+
+### 7. Evaluation & Selection
+- Evaluates all trained models against the hold-out test set using robust metrics (e.g., F1 Score for Classification, RMSE for Regression).
+- Selects the global best model and serializes it to disk for production use.
+
+### 8. Explainability & Report Generation
+- Runs comprehensive Exploratory Data Analysis (EDA) on the raw inputs.
+- Computes built-in feature importance and SHAP values for the winning model.
+- Compiles all metrics, charts, and configuration logs into an interactive, self-contained HTML report.
 
 ---
 
