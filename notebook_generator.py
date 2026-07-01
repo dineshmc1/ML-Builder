@@ -22,7 +22,8 @@ except ImportError:
 sns.set_theme(style='whitegrid')"""))
     
     # 2. Data Profiling & Quality
-    nb.cells.append(new_markdown_cell("## 1. Data Profiling & Quality Assessment"))
+    nb.cells.append(new_markdown_cell("## 1. DESCRIPTIVE ANALYTICS (What happened?)"))
+    nb.cells.append(new_markdown_cell("*Dataset context, size, class distribution, and data health.*"))
     if modality == "tabular":
         nb.cells.append(new_code_cell("""# Load & Profile
 X, y = results['X'], results['y']
@@ -39,7 +40,8 @@ print('Classes:', len(set(results['y'])))
 print('Embedding Dimensions:', results['X'].shape[1])"""))
         
     # 3. Advanced EDA (Paradigm Specific)
-    nb.cells.append(new_markdown_cell("## 📈 2. Advanced Exploratory Analysis"))
+    nb.cells.append(new_markdown_cell("## 2. DIAGNOSTIC ANALYTICS (Why did it happen?)"))
+    nb.cells.append(new_markdown_cell("*Feature correlations, SHAP explanations, and error drivers.*"))
     if paradigm == "AutoML":
         nb.cells.append(new_code_cell("""# Correlation Heatmap & Feature Distributions
 if isinstance(X, pd.DataFrame):
@@ -71,7 +73,8 @@ if X_embed is not None and len(X_embed) > 0:
     plt.show()"""))
         
     # 4. Model Diagnostics & Error Analysis
-    nb.cells.append(new_markdown_cell("## 🤖 3. Model Performance & Error Analysis"))
+    nb.cells.append(new_markdown_cell("## 3. PREDICTIVE ANALYTICS (What will happen?)"))
+    nb.cells.append(new_markdown_cell("*Final evaluation metrics, Confusion Matrix, and real-world performance.*"))
     nb.cells.append(new_code_cell("""# Confusion Matrix & Classification Report
 y_true, y_pred = results.get('y_test', results.get('y')), results.get('y_pred')
 if y_true is not None and y_pred is not None:
@@ -83,7 +86,8 @@ if y_true is not None and y_pred is not None:
     plt.show()"""))
     
     # 5. Business Impact Simulation
-    nb.cells.append(new_markdown_cell("## 💼 4. Business Impact & Recommendations"))
+    nb.cells.append(new_markdown_cell("## 4. PRESCRIPTIVE ANALYTICS (What should we do next?)"))
+    nb.cells.append(new_markdown_cell("*Business recommendations, ROI simulation, and deployment advice.*"))
     nb.cells.append(new_code_cell("""# ROI Simulation based on Success Metric
 metric = config.get('business_context', {}).get('success_metric', 'Accuracy')
 acc = results.get('final_accuracy', 0.0)

@@ -7,16 +7,20 @@ def calculate_heuristics_d(num_rows, num_cols, problem_type):
     """Rule-based complexity score (0 to 1)"""
     score = 0.0
     # Large datasets favor DL
-    if num_rows > 50000: score += 0.4
+    if num_rows > 100000: score += 0.5
+    elif num_rows > 50000: score += 0.4
     elif num_rows > 10000: score += 0.2
     
     # High dimensionality favors DL
     if num_cols > 100: score += 0.3
     elif num_cols > 50: score += 0.1
     
+    # Small feature spaces favor Classical ML
+    if num_cols < 20: score -= 0.5
+    
     # Non-linear/Complex tasks (e.g., multiclass with many classes)
-    # For now, we cap it at 1.0
-    return min(score, 1.0)
+    # Cap between 0.0 and 1.0
+    return max(0.0, min(score, 1.0))
 
 def calculate_llm_d(dataset_profile):
     """Ask LLM for probability that DL is better than ML"""

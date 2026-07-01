@@ -46,8 +46,18 @@ class ModalityFAISSMemory:
         distances, indices = self.index.search(query, search_k)
         
         results = []
-        for idx in indices[0]:
+        for i, idx in enumerate(indices[0]):
             if idx != -1:  # Valid result
-                results.append(self.metadata[idx])
+                # For IndexFlatL2, lower distance is more similar. 
+                # Convert L2 distance to a pseudo-similarity score (0 to 1)
+                # or just return the L2 distance, but the user expects a similarity score.
+                # Assuming query and memory vectors are normalized, L2 distance squared relates to cosine similarity.
+                # Let's return a simple pseudo-similarity for the threshold check.
+                dist = distances[0][i]
+                sim = 1.0 / (1.0 + dist)
+                
+                res = self.metadata[idx].copy()
+                res['similarity'] = sim
+                results.append(res)
         
         return results

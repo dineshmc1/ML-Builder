@@ -101,12 +101,20 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
                     best_retrieved_models.extend(n.models)
             # Deduplicate while preserving order
             best_retrieved_models = list(dict.fromkeys(best_retrieved_models))[:3]
-            warm_params = neighbors[0].metadata.get("hparams", {})
+            
+            best_distance = dists[0][0]
+            MAX_DISTANCE_THRESHOLD = 0.50
+            if best_distance <= MAX_DISTANCE_THRESHOLD:
+                print(f"\n  [Memory] Close match found (L2 Distance: {best_distance:.4f}). Warm-starting...")
+                warm_params = neighbors[0].metadata.get("hparams", {})
+            else:
+                print(f"\n  [Memory] Distant match (L2 Distance: {best_distance:.4f} > {MAX_DISTANCE_THRESHOLD}). Triggering COLD START.")
+                warm_params = {}
         
             print(f"\n📂 DATASET: {did} | TARGET: {y.name if hasattr(y, 'name') else 'Unknown'} | TYPE: {problem_type}\n")
             print("🔍 MEMORY RETRIEVAL (Top 3 Similar Past Experiments):")
             print("┌────────────┬────────────┬──────────────┬──────────────────────────────┐")
-            print("│ Dataset    │ Similarity │ Best Model   │ Warm-Start Hyperparameters   │")
+            print("│ Dataset    │ Distance │ Best Model   │ Warm-Start Hyperparameters   │")
             print("├────────────┼────────────┼──────────────┼──────────────────────────────┤")
             for i, n in enumerate(neighbors[:3]):
                 did_name = n.metadata.get("dataset_id", "Unknown")
@@ -143,7 +151,23 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
     
     if paradigm_decision == "AutoML":
         print("\n🚀 Executing Classical ML Pipeline...")
-        preprocessor_cs, _, _ = build_preprocessor(X)
+        # ✅ NEW: Activate God-Tier Feature Engineering
+        from feature_engineering import FeatureEngineer
+        
+        fe = FeatureEngineer(
+            skew_threshold=1.0,
+            rare_threshold=0.01,      # Groups categories < 1% into "_RARE"
+            corr_threshold=0.95,      # Drops highly collinear features
+            encoding_strategy="target",
+            interaction_features=5,
+            enable_ratios=True
+        )
+        
+        # Apply engineering (handles text extraction, Yeo-Johnson, outlier capping, etc.)
+        X = fe.fit_transform(X, y, problem_type)
+        
+        # Pass the learned scaler map to the preprocessor for optimal scaling
+        preprocessor_cs, _, _ = build_preprocessor(X, scaler_map=fe.get_scalers())
         
         full_search_best_model_name = "NONE"
         best_params = {}
@@ -164,8 +188,21 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
                 print(f"  [VALIDATION] Full Search Winner: {full_search_best_model_name} (Score: {full_score:.4f})")
                 
         # HPO on top models
-        top_models_hpo = best_retrieved_models
-        print(f"  [HPO] Running HPO on FAISS Top Models: {top_models_hpo}")
+        agentic_models = llm_models
+        memory_models = best_retrieved_models
+        
+        # Combine them and remove duplicates
+        models_to_train = list(set(agentic_models + memory_models))
+        
+        # CRITICAL: For Regression, ALWAYS ensure XGBoost/LightGBM/RF are in the pool!
+        if problem_type == 'regression':
+            default_powerhouses = ['xgb_reg', 'lgbm_reg', 'rf_reg']
+            for m in default_powerhouses:
+                if m not in models_to_train:
+                    models_to_train.append(m)
+                    
+        top_models_hpo = models_to_train
+        print(f"  [HPO] Running HPO on Combined Pool: {top_models_hpo}")
         from hpo_optuna import run_hpo
         best_hpo_model, best_params = run_hpo(
             X, y, preprocessor_cs, top_models_hpo, warm_params, problem_type, str(did)
@@ -181,22 +218,118 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
             print(f"  [SHAP] Generating explanations for {full_search_best_model_name}...")
             try:
                 final_model_instance = get_models(problem_type, [full_search_best_model_name])[full_search_best_model_name]
-                X_prep_shap = preprocessor_cs.fit_transform(X, y)
-                final_model_instance.fit(X_prep_shap, y)
-                try:
-                    feature_names = preprocessor_cs.get_feature_names_out()
-                except:
-                    feature_names = [f"feature_{i}" for i in range(X_prep_shap.shape[1])]
                 
-                dense_X = X_prep_shap.toarray() if hasattr(X_prep_shap, 'toarray') else X_prep_shap
+                from sklearn.model_selection import train_test_split
+                import numpy as np
+                X_train_split, X_test_split, y_train_split, y_test_split = train_test_split(X, y, test_size=0.2, random_state=42)
+                
+                X_train_prep = preprocessor_cs.fit_transform(X_train_split, y_train_split)
+                X_test_prep = preprocessor_cs.transform(X_test_split)
+                final_model_instance.fit(X_train_prep, y_train_split)
+                
+                y_pred = final_model_instance.predict(X_test_prep)
+                
+                from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, log_loss, mean_absolute_error, mean_squared_error, r2_score
+                if problem_type == 'classification':
+                    if hasattr(final_model_instance, "predict_proba"):
+                        y_prob = final_model_instance.predict_proba(X_test_prep)
+                        if y_prob.shape[1] == 2:
+                            y_prob = y_prob[:, 1]
+                    else:
+                        y_prob = y_pred
+                        
+                    if len(y_prob.shape) == 1 or (len(y_prob.shape) == 2 and y_prob.shape[1] == 2):
+                        try:
+                            roc_auc = roc_auc_score(y_test_split, y_prob)
+                            ll = log_loss(y_test_split, y_prob)
+                        except:
+                            roc_auc, ll = "N/A", "N/A"
+                    else:
+                        try:
+                            roc_auc = roc_auc_score(y_test_split, y_prob, multi_class='ovr')
+                            ll = log_loss(y_test_split, y_prob)
+                        except:
+                            roc_auc, ll = "N/A", "N/A"
+                            
+                    eval_metrics = {
+                        "classification_report": classification_report(y_test_split, y_pred, output_dict=True),
+                        "confusion_matrix": confusion_matrix(y_test_split, y_pred).tolist(),
+                        "roc_auc": roc_auc,
+                        "log_loss": ll
+                    }
+                else:
+                    eval_metrics = {
+                        "mae": mean_absolute_error(y_test_split, y_pred),
+                        "mse": mean_squared_error(y_test_split, y_pred),
+                        "rmse": np.sqrt(mean_squared_error(y_test_split, y_pred)),
+                        "r2": r2_score(y_test_split, y_pred)
+                    }
+                
+                total_models_in_catalog = 14
+                models_actually_trained = len(all_models_full) if validate else len(top_models_hpo)
+                scr = total_models_in_catalog / max(1, models_actually_trained)
+                
+                if problem_type == 'classification':
+                    from sklearn.metrics import accuracy_score
+                    final_accuracy = accuracy_score(y_test_split, y_pred)
+                    majority_class = y_train_split.value_counts().idxmax()
+                    baseline_preds = [majority_class] * len(y_test_split)
+                    baseline_acc = accuracy_score(y_test_split, baseline_preds)
+                    pr = final_accuracy / max(0.01, baseline_acc)
+                else:
+                    final_accuracy = eval_metrics['r2']
+                    pr = 1.0
+                
+                tus = scr * pr 
+                
+                def calculate_ece(y_true, y_prob, n_bins=10):
+                    if len(y_prob.shape) > 1: return 0.0
+                    bin_boundaries = np.linspace(0, 1, n_bins + 1)
+                    ece = 0.0
+                    for i in range(n_bins):
+                        mask = (y_prob > bin_boundaries[i]) & (y_prob <= bin_boundaries[i+1])
+                        if np.sum(mask) > 0:
+                            try:
+                                bin_acc = np.mean(np.array(y_true)[mask] == np.max(y_true))
+                                bin_conf = np.mean(y_prob[mask])
+                                ece += np.abs(bin_acc - bin_conf) * (np.sum(mask) / len(y_true))
+                            except:
+                                pass
+                    return ece
+                
+                if problem_type == 'classification' and (len(y_prob.shape) == 1):
+                    ece = calculate_ece(y_test_split, y_prob)
+                else:
+                    ece = 0.0
+                    
+                system_metrics = {
+                    "confidence_score_C_D": round(float(r_d_score), 4),
+                    "expected_calibration_error_ECE": round(ece, 4),
+                    "search_compression_ratio_SCR": round(scr, 2),
+                    "performance_retention_PR": round(pr, 2),
+                    "transfer_utility_score_TUS": round(tus, 2)
+                }
+
+                if hasattr(preprocessor_cs, 'get_feature_names_out'):
+                    feature_names = list(preprocessor_cs.get_feature_names_out())
+                else:
+                    # Fallback for AutoDL bypass or FunctionTransformer
+                    feature_names = X_train_prep.columns.tolist() if hasattr(X_train_prep, 'columns') else [f"feat_{i}" for i in range(X_train_prep.shape[1])]
+                
+                dense_X = X_train_prep.toarray() if hasattr(X_train_prep, 'toarray') else X_train_prep
                 X_train_df = pd.DataFrame(dense_X, columns=feature_names)
                 
+                dense_X_test = X_test_prep.toarray() if hasattr(X_test_prep, 'toarray') else X_test_prep
+                X_test_df = pd.DataFrame(dense_X_test, columns=feature_names)
+                
                 success, top_3_shap_features = generate_shap_explanations(
-                    model=final_model_instance, X_train=X_train_df, X_test=X_train_df, 
+                    model=final_model_instance, X_train=X_train_df, X_test=X_test_df, 
                     model_name=full_search_best_model_name, dataset_id=str(did)
                 )
             except Exception as e:
-                print(f"  [SHAP] Failed: {e}")
+                import traceback
+                print(f"  [SHAP/Metrics] Failed: {e}")
+                traceback.print_exc()
                 
         # Phase 5.6: LLM Explainability Report
         try:
@@ -217,7 +350,9 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
                 "shap_interpretability": {
                     "top_3_features": top_3_shap_features,
                     "model_type": "Tree-based" if full_search_best_model_name in ['rf', 'gb', 'xgb_clf', 'xgb_reg', 'lgbm_clf', 'lgbm_reg', 'et_clf', 'et_reg'] else "Linear/Black-box"
-                }
+                },
+                "evaluation_metrics": eval_metrics if 'eval_metrics' in locals() else {},
+                "system_metrics": system_metrics if 'system_metrics' in locals() else {}
             }
             generate_comprehensive_report(master_context, str(did))
         except Exception as e:
@@ -231,12 +366,9 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
                 "problem_type": problem_type,
                 "hparams": {full_search_best_model_name: best_params}
             }
-            store.add(str(did), raw_vec, [full_search_best_model_name], metadata)
-            
-            # Rebuild index with 32D embeddings to keep it consistent
-            from task_encoder import encode_all
-            learned_vectors = encode_all(store, encoder)
-            store.rebuild_index(learned_vectors)
+            # Save the current dataset's result
+            store.add(str(did), query_vec[0], [full_search_best_model_name], metadata)
+            store.build_index()
             
             # Save to disk
             MEMORY_INDEX_PATH = "memory_store.faiss"
@@ -270,10 +402,9 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
             
             device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
             print(f"  [AutoDL] Running NAS on {device}...")
+            print("  [AutoDL] Bypassing Tabular Feature Engineering to preserve embedding geometry.")
             
-            nas_prep, _, _ = build_preprocessor(X)
-            X_nas_prep = nas_prep.fit_transform(X, y)
-            X_train_numpy = X_nas_prep.toarray() if hasattr(X_nas_prep, 'toarray') else np.array(X_nas_prep)
+            X_train_numpy = X.toarray() if hasattr(X, 'toarray') else np.array(X)
             y_train_numpy = np.array(y)
             
             optuna.logging.set_verbosity(optuna.logging.WARNING)
@@ -307,9 +438,15 @@ def run_single_dataset_pipeline(X, y, problem_type, store, encoder, did="local",
                 similar_results = dl_memory.search(query_embedding, top_k=3)
                 
                 if similar_results:
-                    print(f"  [DL Memory] 🧠 Found {len(similar_results)} similar {modality} datasets")
-                    # Use best params from most similar dataset
-                    prior_params = similar_results[0]['best_params']
+                    best_similarity = similar_results[0]['similarity']
+                    MEMORY_THRESHOLD = 0.60 
+                    
+                    if best_similarity >= MEMORY_THRESHOLD:
+                        print(f"  [DL Memory] High similarity found ({best_similarity:.4f}). Warm-starting NAS...")
+                        prior_params = similar_results[0]['best_params']
+                    else:
+                        print(f"  [DL Memory] Low similarity ({best_similarity:.4f} < {MEMORY_THRESHOLD}). Triggering COLD START...")
+                        prior_params = None
                 else:
                     print(f"  [DL Memory] No similar {modality} datasets found. Starting cold.")
             except Exception as e:

@@ -109,8 +109,10 @@ def run_hpo(X, y, preprocessor, top_models, memory_hparams, problem_type, datase
                     valid_params[param] = val
                     
             if valid_params:
+                # Filter out None values to prevent Optuna crashes
+                clean_params = {k: v for k, v in valid_params.items() if v is not None}
                 print(f"  [HPO] Warm-starting {model_name} with memory params.")
-                study.enqueue_trial(valid_params)
+                study.enqueue_trial(clean_params)
                 warm_start_used = True
         
         # W&B Callback (logging to the active pipeline run)
@@ -121,7 +123,7 @@ def run_hpo(X, y, preprocessor, top_models, memory_hparams, problem_type, datase
         print(f"  [HPO] Running 10 Optuna trials for {model_name}...")
         study.optimize(
             lambda trial: objective(trial, X, y, preprocessor, model_name, problem_type, w1, w2, w3),
-            n_trials=10, # Keep to 10 for feasibility in local testing
+            n_trials=100, # Keep to 10 for feasibility in local testing
             callbacks=[wandb_callback],
             show_progress_bar=False,
             catch=(Exception,)
